@@ -55,11 +55,12 @@ function getL2Headers(
   timestamp: number,
   method: string,
   requestPath: string,
-  body?: string
+  body?: string,
+  walletAddress?: string
 ) {
   return buildHmacSignature(secret, timestamp, method, requestPath, body).then(
     (sig) => ({
-      "POLY-ADDRESS": apiKey,
+      "POLY-ADDRESS": walletAddress || apiKey,
       "POLY-SIGNATURE": sig,
       "POLY-TIMESTAMP": `${timestamp}`,
       "POLY-API-KEY": apiKey,
@@ -133,12 +134,12 @@ async function getPositions(walletAddress: string): Promise<any> {
 
 // Derive wallet address from private key using basic secp256k1
 // We use the CLOB API's /auth/api-keys endpoint to verify credentials
-async function verifyCredentials(apiKey: string, secret: string, passphrase: string): Promise<boolean> {
+async function verifyCredentials(apiKey: string, secret: string, passphrase: string, walletAddress: string): Promise<boolean> {
   const timestamp = Math.floor(Date.now() / 1000);
   const method = "GET";
   const path = "/auth/api-keys";
 
-  const headers = await getL2Headers(apiKey, secret, passphrase, timestamp, method, path);
+  const headers = await getL2Headers(apiKey, secret, passphrase, timestamp, method, path, undefined, walletAddress);
 
   const res = await fetch(`${CLOB_HOST}${path}`, {
     method,
@@ -156,13 +157,14 @@ async function getBalanceAllowance(
   apiKey: string,
   secret: string,
   passphrase: string,
-  tokenId: string
+  tokenId: string,
+  walletAddress?: string
 ): Promise<any> {
   const timestamp = Math.floor(Date.now() / 1000);
   const method = "GET";
   const path = `/data/balance-allowance?asset_type=CONDITIONAL&token_id=${tokenId}`;
 
-  const headers = await getL2Headers(apiKey, secret, passphrase, timestamp, method, path);
+  const headers = await getL2Headers(apiKey, secret, passphrase, timestamp, method, path, undefined, walletAddress);
 
   const res = await fetch(`${CLOB_HOST}${path}`, {
     method,
@@ -251,7 +253,8 @@ async function placeOrder(
   tokenId: string,
   side: "BUY" | "SELL",
   size: number,
-  price: number
+  price: number,
+  walletAddress?: string
 ): Promise<any> {
   const timestamp = Math.floor(Date.now() / 1000);
   const method = "POST";
@@ -272,7 +275,7 @@ async function placeOrder(
   };
 
   const bodyStr = JSON.stringify(orderPayload);
-  const headers = await getL2Headers(apiKey, secret, passphrase, timestamp, method, path, bodyStr);
+  const headers = await getL2Headers(apiKey, secret, passphrase, timestamp, method, path, bodyStr, walletAddress);
 
   const res = await fetch(`${CLOB_HOST}${path}`, {
     method,
@@ -298,12 +301,12 @@ async function placeOrder(
 }
 
 // Get open orders
-async function getOpenOrders(apiKey: string, secret: string, passphrase: string): Promise<any> {
+async function getOpenOrders(apiKey: string, secret: string, passphrase: string, walletAddress?: string): Promise<any> {
   const timestamp = Math.floor(Date.now() / 1000);
   const method = "GET";
   const path = "/data/orders";
 
-  const headers = await getL2Headers(apiKey, secret, passphrase, timestamp, method, path);
+  const headers = await getL2Headers(apiKey, secret, passphrase, timestamp, method, path, undefined, walletAddress);
 
   const res = await fetch(`${CLOB_HOST}${path}`, {
     method,
@@ -322,12 +325,12 @@ async function getOpenOrders(apiKey: string, secret: string, passphrase: string)
 }
 
 // Get trade history
-async function getTradeHistory(apiKey: string, secret: string, passphrase: string): Promise<any> {
+async function getTradeHistory(apiKey: string, secret: string, passphrase: string, walletAddress?: string): Promise<any> {
   const timestamp = Math.floor(Date.now() / 1000);
   const method = "GET";
   const path = "/data/trades";
 
-  const headers = await getL2Headers(apiKey, secret, passphrase, timestamp, method, path);
+  const headers = await getL2Headers(apiKey, secret, passphrase, timestamp, method, path, undefined, walletAddress);
 
   const res = await fetch(`${CLOB_HOST}${path}`, {
     method,
@@ -426,7 +429,7 @@ serve(async (req) => {
         let polymarketUsdc = 0;
         if (connected) {
           const [v, onChainBal] = await Promise.all([
-            verifyCredentials(POLY_API_KEY!, POLY_SECRET!, POLY_PASSPHRASE!),
+            verifyCredentials(POLY_API_KEY!, POLY_SECRET!, POLY_PASSPHRASE!, walletAddress),
             getWalletBalance(walletAddress),
           ]);
           verified = v;
@@ -436,7 +439,7 @@ serve(async (req) => {
           try {
             const timestamp = Math.floor(Date.now() / 1000);
             const path = `/data/balance-allowance?asset_type=COLLATERAL`;
-            const headers = await getL2Headers(POLY_API_KEY!, POLY_SECRET!, POLY_PASSPHRASE!, timestamp, "GET", path);
+            const headers = await getL2Headers(POLY_API_KEY!, POLY_SECRET!, POLY_PASSPHRASE!, timestamp, "GET", path, undefined, walletAddress);
             const res = await fetch(`${CLOB_HOST}${path}`, {
               method: "GET",
               headers: { ...headers, "Content-Type": "application/json" },
@@ -473,7 +476,7 @@ serve(async (req) => {
           try {
             const timestamp = Math.floor(Date.now() / 1000);
             const path = `/data/balance-allowance?asset_type=COLLATERAL`;
-            const headers = await getL2Headers(POLY_API_KEY, POLY_SECRET, POLY_PASSPHRASE, timestamp, "GET", path);
+            const headers = await getL2Headers(POLY_API_KEY, POLY_SECRET, POLY_PASSPHRASE, timestamp, "GET", path, undefined, walletAddress);
             const res = await fetch(`${CLOB_HOST}${path}`, {
               method: "GET",
               headers: { ...headers, "Content-Type": "application/json" },
@@ -505,7 +508,7 @@ serve(async (req) => {
             { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
           );
         }
-        const orders = await getOpenOrders(POLY_API_KEY, POLY_SECRET, POLY_PASSPHRASE);
+        const orders = await getOpenOrders(POLY_API_KEY, POLY_SECRET, POLY_PASSPHRASE, walletAddress);
         return new Response(JSON.stringify(orders), {
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
@@ -518,7 +521,7 @@ serve(async (req) => {
             { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
           );
         }
-        const trades = await getTradeHistory(POLY_API_KEY, POLY_SECRET, POLY_PASSPHRASE);
+        const trades = await getTradeHistory(POLY_API_KEY, POLY_SECRET, POLY_PASSPHRASE, walletAddress);
         return new Response(JSON.stringify(trades), {
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
@@ -547,7 +550,8 @@ serve(async (req) => {
           tokenId,
           side,
           size,
-          price
+          price,
+          walletAddress
         );
 
         return new Response(JSON.stringify(result), {
