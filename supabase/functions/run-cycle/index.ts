@@ -8,17 +8,49 @@ const corsHeaders = {
 
 async function fetchPolymarket(): Promise<string> {
   try {
-    const res = await fetch(
-      "https://gamma-api.polymarket.com/markets?active=true&limit=30&order=liquidityNum&ascending=false"
+    const now = new Date();
+    const soon = new Date(now.getTime() + 10 * 60 * 1000); // 10 minutes from now
+    const endMin = now.toISOString();
+    const endMax = soon.toISOString();
+
+    // Fetch markets ending in the next 10 minutes (imminent resolution)
+    const urgentRes = await fetch(
+      `https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=30&order=endDate&ascending=true&end_date_min=${endMin}&end_date_max=${endMax}`
     );
-    const markets = await res.json();
-    const top = markets
-      .filter((m: any) => (m.liquidityNum || 0) > 15000)
-      .slice(0, 15)
-      .map((m: any) => `${m.question} | price: ${m.outcomePrices} | vol: $${Math.round(m.volumeNum || 0)} | liq: $${Math.round(m.liquidityNum || 0)}`)
+    const urgentMarkets = await urgentRes.json();
+
+    // Also fetch markets ending within 1 hour as backup
+    const hourMax = new Date(now.getTime() + 60 * 60 * 1000).toISOString();
+    const nearRes = await fetch(
+      `https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=30&order=endDate&ascending=true&end_date_min=${endMin}&end_date_max=${hourMax}`
+    );
+    const nearMarkets = await nearRes.json();
+
+    const formatMarket = (m: any) => {
+      const endDate = m.endDate || m.end_date_iso;
+      const minsLeft = endDate ? Math.round((new Date(endDate).getTime() - now.getTime()) / 60000) : "?";
+      return `${m.question} | price: ${m.outcomePrices} | vol: $${Math.round(m.volumeNum || 0)} | liq: $${Math.round(m.liquidityNum || 0)} | ENDS IN: ${minsLeft} min`;
+    };
+
+    const urgentList = (Array.isArray(urgentMarkets) ? urgentMarkets : [])
+      .slice(0, 10)
+      .map(formatMarket)
       .join("\n");
-    return `POLYMARKET LIVE:\n${top || "No high-liquidity markets found."}`;
+
+    const nearList = (Array.isArray(nearMarkets) ? nearMarkets : [])
+      .filter((m: any) => !urgentMarkets?.some?.((u: any) => u.id === m.id))
+      .slice(0, 10)
+      .map(formatMarket)
+      .join("\n");
+
+    const output = [
+      urgentList ? `⚡ ENDING IN <10 MIN:\n${urgentList}` : "",
+      nearList ? `🕐 ENDING IN <1 HOUR:\n${nearList}` : "",
+    ].filter(Boolean).join("\n\n");
+
+    return `POLYMARKET IMMINENT TRADES:\n${output || "No markets ending soon found. Falling back to high-liquidity."}`;
   } catch (e) {
+    console.error("Polymarket fetch error:", e);
     return "POLYMARKET: fetch error";
   }
 }
