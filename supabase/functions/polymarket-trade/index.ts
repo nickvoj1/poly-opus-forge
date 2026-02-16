@@ -872,6 +872,44 @@ serve(async (req) => {
         }
       }
 
+      case "proxy-submit": {
+        // Browser sends signed order here, edge function forwards to Polymarket
+        // This bypasses CORS (browser→edge function is same-origin-ish)
+        // Note: this WILL get 403 geoblocked from EU servers, but we try anyway
+        const { signedOrder: order, headers: polyHeaders, submitUrl } = params;
+        if (!order || !polyHeaders || !submitUrl) {
+          return new Response(
+            JSON.stringify({ error: "Missing signedOrder, headers, or submitUrl" }),
+            { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+          );
+        }
+
+        try {
+          const orderBody = JSON.stringify(order);
+          const proxyRes = await fetch(submitUrl, {
+            method: "POST",
+            headers: {
+              ...polyHeaders,
+              "Content-Type": "application/json",
+            },
+            body: orderBody,
+          });
+          const proxyBody = await proxyRes.text();
+          console.log(`Proxy submit [${proxyRes.status}]: ${proxyBody.substring(0, 300)}`);
+
+          return new Response(proxyBody, {
+            status: proxyRes.status,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
+        } catch (e: any) {
+          console.error("Proxy submit error:", e);
+          return new Response(
+            JSON.stringify({ error: e.message }),
+            { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+          );
+        }
+      }
+
       default:
         return new Response(
           JSON.stringify({ error: `Unknown action: ${action}` }),
