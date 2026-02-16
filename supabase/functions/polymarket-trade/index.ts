@@ -1,4 +1,5 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { buildPolyHmacSignature } from "https://esm.sh/@polymarket/clob-client@5.2.3/dist/signing/hmac";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -7,48 +8,6 @@ const corsHeaders = {
 };
 
 const CLOB_HOST = "https://clob.polymarket.com";
-
-// Build HMAC-SHA256 signature for L2 auth
-async function buildHmacSignature(
-  secret: string,
-  timestamp: number,
-  method: string,
-  requestPath: string,
-  body?: string
-): Promise<string> {
-  let message = `${timestamp}${method}${requestPath}`;
-  if (body !== undefined) {
-    message += body;
-  }
-
-  // Decode base64 secret - handle both standard and URL-safe base64
-  const cleanSecret = secret.replace(/-/g, '+').replace(/_/g, '/');
-  const binaryStr = atob(cleanSecret);
-  const keyData = new Uint8Array(binaryStr.length);
-  for (let i = 0; i < binaryStr.length; i++) {
-    keyData[i] = binaryStr.charCodeAt(i);
-  }
-
-  const cryptoKey = await crypto.subtle.importKey(
-    "raw",
-    keyData,
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"]
-  );
-
-  const messageBuffer = new TextEncoder().encode(message);
-  const signatureBuffer = await crypto.subtle.sign("HMAC", cryptoKey, messageBuffer);
-  // Encode result as base64
-  const sigArray = new Uint8Array(signatureBuffer);
-  let binary = '';
-  for (let i = 0; i < sigArray.length; i++) {
-    binary += String.fromCharCode(sigArray[i]);
-  }
-  // Must be URL-safe base64 (official Polymarket client requirement)
-  const sig = btoa(binary);
-  return sig.replace(/\+/g, '-').replace(/\//g, '_');
-}
 
 function getL2Headers(
   apiKey: string,
@@ -60,7 +19,7 @@ function getL2Headers(
   body?: string,
   walletAddress?: string
 ) {
-  return buildHmacSignature(secret, timestamp, method, requestPath, body).then(
+  return buildPolyHmacSignature(secret, timestamp, method, requestPath, body).then(
     (sig) => ({
       "POLY_ADDRESS": walletAddress || apiKey,
       "POLY_SIGNATURE": sig,
@@ -555,23 +514,32 @@ serve(async (req) => {
                 "POLY_TIMESTAMP": `${ts}`,
                 "POLY_NONCE": "0",
               };
-              // Use L2 HMAC auth for balance-allowance (now with URL-safe base64 fix)
-              const balTs = Math.floor(Date.now() / 1000);
-              const balPath = `/balance-allowance?asset_type=COLLATERAL&signature_type=1`;
-              const balHeaders = await getL2Headers(POLY_API_KEY!, POLY_SECRET!, POLY_PASSPHRASE!, balTs, "GET", balPath, undefined, clobAuthAddress);
-              const balRes = await fetch(`${CLOB_HOST}${balPath}`, {
-                method: "GET",
-                headers: { ...balHeaders, "Content-Type": "application/json" },
-              });
-              console.log(`Balance-allowance response [${balRes.status}]`);
-              if (balRes.ok) {
-                const data = await balRes.json();
-                console.log("Balance data:", JSON.stringify(data));
-                const rawBalance = parseFloat(data.balance || "0");
-                polymarketUsdc = rawBalance > 1000 ? rawBalance / 1e6 : rawBalance;
-              } else {
-                const errText = await balRes.text();
-                console.log("Balance error:", errText);
+              // Try multiple signature_type values and address formats
+              let balanceFound = false;
+              const balAttempts = [
+                { path: `/balance-allowance?asset_type=COLLATERAL`, addr: clobAuthAddress, label: "no-sigtype-eoa" },
+                { path: `/balance-allowance?asset_type=COLLATERAL&signature_type=0`, addr: clobAuthAddress, label: "sigtype0-eoa" },
+                { path: `/balance-allowance?asset_type=COLLATERAL&signature_type=1`, addr: proxyAddress, label: "sigtype1-proxy" },
+                { path: `/balance-allowance?asset_type=COLLATERAL&signature_type=1`, addr: clobAuthAddress, label: "sigtype1-eoa" },
+              ];
+              for (const attempt of balAttempts) {
+                if (balanceFound) break;
+                const balTs = Math.floor(Date.now() / 1000);
+                const balHeaders = await getL2Headers(POLY_API_KEY!, POLY_SECRET!, POLY_PASSPHRASE!, balTs, "GET", attempt.path, undefined, attempt.addr);
+                const balRes = await fetch(`${CLOB_HOST}${attempt.path}`, {
+                  method: "GET",
+                  headers: { ...balHeaders, "Content-Type": "application/json" },
+                });
+                const balBody = await balRes.text();
+                console.log(`Balance attempt [${attempt.label}] [${balRes.status}]:`, balBody);
+                if (balRes.ok) {
+                  try {
+                    const data = JSON.parse(balBody);
+                    const rawBalance = parseFloat(data.balance || "0");
+                    polymarketUsdc = rawBalance > 1000 ? rawBalance / 1e6 : rawBalance;
+                    balanceFound = true;
+                  } catch {}
+                }
               }
             }
           } catch (e) {
