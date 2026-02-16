@@ -441,19 +441,44 @@ serve(async (req) => {
       case "verify-connection": {
         const connected = !!(POLY_API_KEY && POLY_SECRET && POLY_PASSPHRASE && clobAuthAddress);
         let verified = false;
-        let balance = { usdc: 0, matic: 0 };
+        let eoaBal = { usdc: 0, matic: 0 };
+        let proxyBal = { usdc: 0, matic: 0 };
         let polymarketUsdc = 0;
+        let positionsValue = 0;
         let verifyDebug: any = null;
         if (connected) {
-          const [verifyResult, onChainBal] = await Promise.all([
+          // Query all balances in parallel
+          const queries: Promise<any>[] = [
             verifyCredentials(POLY_API_KEY!, POLY_SECRET!, POLY_PASSPHRASE!, clobAuthAddress),
-            getWalletBalance(onChainAddress || clobAuthAddress),
-          ]);
+            getWalletBalance(eoaAddress),
+          ];
+          if (proxyAddress && proxyAddress !== eoaAddress) {
+            queries.push(getWalletBalance(proxyAddress));
+          }
+          // Get positions value
+          if (proxyAddress) {
+            queries.push(getPositions(proxyAddress));
+          }
+
+          const results = await Promise.all(queries);
+          const verifyResult = results[0];
+          eoaBal = results[1];
+          if (proxyAddress && proxyAddress !== eoaAddress) {
+            proxyBal = results[2];
+          }
+          
+          // Calculate positions value
+          const positionsData = proxyAddress && proxyAddress !== eoaAddress ? results[3] : results[2];
+          if (Array.isArray(positionsData)) {
+            for (const pos of positionsData) {
+              positionsValue += pos.currentValue || 0;
+            }
+          }
+
           verified = verifyResult.ok;
           verifyDebug = { status: verifyResult.status, body: verifyResult.body };
-          balance = onChainBal;
           
-          // Get Polymarket proxy USDC balance
+          // Get Polymarket CLOB USDC balance
           try {
             const timestamp = Math.floor(Date.now() / 1000);
             const path = `/data/balance-allowance?asset_type=COLLATERAL`;
@@ -468,13 +493,23 @@ serve(async (req) => {
             }
           } catch {}
         }
+        const totalOnChainUsdc = eoaBal.usdc + proxyBal.usdc;
+        const totalUsdc = totalOnChainUsdc + polymarketUsdc;
         return new Response(JSON.stringify({ 
           connected, 
           verified, 
           walletAddress: proxyAddress || null,
           eoaAddress: eoaAddress || null,
           verifyDebug,
-          balance: { usdc: balance.usdc + polymarketUsdc, matic: balance.matic, onChainUsdc: balance.usdc, polymarketUsdc },
+          balance: { 
+            usdc: totalUsdc, 
+            matic: eoaBal.matic + proxyBal.matic, 
+            eoaUsdc: eoaBal.usdc,
+            proxyUsdc: proxyBal.usdc,
+            polymarketUsdc,
+            positionsValue,
+            total: totalUsdc + positionsValue,
+          },
         }), {
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
@@ -487,11 +522,26 @@ serve(async (req) => {
             { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
           );
         }
-        // Get on-chain balance
-        const onChainBal = await getWalletBalance(onChainAddress || clobAuthAddress);
+        // Get on-chain balances for both EOA and proxy
+        const balQueries: Promise<any>[] = [getWalletBalance(eoaAddress)];
+        if (proxyAddress && proxyAddress !== eoaAddress) {
+          balQueries.push(getWalletBalance(proxyAddress));
+        }
+        if (proxyAddress) {
+          balQueries.push(getPositions(proxyAddress));
+        }
+        const balResults = await Promise.all(balQueries);
+        const eoaOnChain = balResults[0];
+        const proxyOnChain = (proxyAddress && proxyAddress !== eoaAddress) ? balResults[1] : { usdc: 0, matic: 0 };
+        const posData = (proxyAddress && proxyAddress !== eoaAddress) ? balResults[2] : balResults[1];
         
-        // Also get Polymarket proxy wallet USDC balance via CLOB API
-        let polymarketUsdc = 0;
+        let posValue = 0;
+        if (Array.isArray(posData)) {
+          for (const p of posData) posValue += p.currentValue || 0;
+        }
+        
+        // Also get Polymarket CLOB USDC balance
+        let pmUsdc = 0;
         if (POLY_API_KEY && POLY_SECRET && POLY_PASSPHRASE) {
           try {
             const timestamp = Math.floor(Date.now() / 1000);
@@ -503,19 +553,22 @@ serve(async (req) => {
             });
             if (res.ok) {
               const data = await res.json();
-              polymarketUsdc = parseFloat(data.balance || "0") / 1e6;
+              pmUsdc = parseFloat(data.balance || "0") / 1e6;
             }
           } catch (e) {
             console.error("Error fetching Polymarket USDC balance:", e);
           }
         }
         
-        const totalUsdc = onChainBal.usdc + polymarketUsdc;
+        const totalOnChain = eoaOnChain.usdc + proxyOnChain.usdc;
         return new Response(JSON.stringify({ 
-          usdc: totalUsdc, 
-          matic: onChainBal.matic,
-          onChainUsdc: onChainBal.usdc,
-          polymarketUsdc,
+          usdc: totalOnChain + pmUsdc, 
+          matic: eoaOnChain.matic + proxyOnChain.matic,
+          eoaUsdc: eoaOnChain.usdc,
+          proxyUsdc: proxyOnChain.usdc,
+          polymarketUsdc: pmUsdc,
+          positionsValue: posValue,
+          total: totalOnChain + pmUsdc + posValue,
         }), {
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
