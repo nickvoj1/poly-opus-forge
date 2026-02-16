@@ -89,19 +89,21 @@ async function checkMarketResolution(marketSlug: string, marketQuestion: string)
 
 // Calculate P&L for a bet given its resolution
 function calculatePnL(side: string, recommendedPrice: number, size: number, resolution: string): number {
-  // Normalize side
-  const normalizedSide = side.toUpperCase();
-  const won =
-    (normalizedSide === "BUY" || normalizedSide === "YES") && resolution === "YES" ||
-    (normalizedSide === "SELL" || normalizedSide === "NO") && resolution === "NO";
+  const s = side.toUpperCase();
+  
+  // Determine which outcome the bettor is backing
+  // BUY / BUY_YES / YES → betting on YES
+  // BUY_NO / SELL / NO → betting on NO
+  const bettingOnYes = s === "BUY" || s === "YES" || s === "BUY_YES";
+  const bettingOnNo = s === "SELL" || s === "NO" || s === "BUY_NO" || s === "SELL_YES";
+
+  const won = (bettingOnYes && resolution === "YES") || (bettingOnNo && resolution === "NO");
 
   if (won) {
-    // Bought at recommendedPrice, pays out 1.0 per share
-    // PnL = (1 - price) * size
+    // Payout is 1.0 per share, cost was recommendedPrice per share
     return (1 - recommendedPrice) * size;
   } else {
-    // Lost the bet, lose the cost
-    // PnL = -price * size
+    // Lost the cost
     return -recommendedPrice * size;
   }
 }
