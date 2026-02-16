@@ -71,13 +71,13 @@ const Dashboard = () => {
         .limit(200);
       if (!error && data) {
         setBets(data as any);
-        // Only count resolved (won/lost) bets for real P&L, not expired
-        const resolvedBets = data.filter((b: any) => b.pnl !== null && (b.status === 'won' || b.status === 'lost'));
+        const state = useBotStore.getState();
+        // Filter by mode: live bets when live, sim bets when sim
+        const modeBets = data.filter((b: any) => b.is_live === state.liveTrading);
+        const resolvedBets = modeBets.filter((b: any) => b.pnl !== null && (b.status === 'won' || b.status === 'lost'));
         const totalPnL = resolvedBets.reduce((sum: number, b: any) => sum + Number(b.pnl), 0);
         setRealPnL(totalPnL);
         
-        // In sim mode, override bankroll = starting 100 + real P&L
-        const state = useBotStore.getState();
         if (!state.liveTrading) {
           const realBankroll = 100 + totalPnL;
           useBotStore.setState({ bankroll: realBankroll });
@@ -326,6 +326,8 @@ const Dashboard = () => {
                 }
                 setLiveTrading(v);
                 addLog(v ? "⚡ Switched to LIVE trading mode" : "📊 Switched to simulation mode");
+                // Re-fetch bets to recalculate P&L for the new mode
+                setTimeout(() => fetchBets(), 100);
               }}
               className="data-[state=checked]:bg-destructive"
             />
@@ -389,7 +391,7 @@ const Dashboard = () => {
           variant={(liveTrading && walletBalance ? walletBalance.usdc : bankroll) >= 100 ? "positive" : "negative"} 
         />
         <StatCard 
-          label="Real P&L" 
+          label={liveTrading ? "Live P&L" : "Sim P&L"} 
           value={realPnL} 
           prefix="$" 
           icon={<TrendingUp size={16} />} 
