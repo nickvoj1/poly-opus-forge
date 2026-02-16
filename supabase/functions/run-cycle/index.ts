@@ -71,7 +71,7 @@ serve(async (req) => {
   }
 
   try {
-    const { cycle, bankroll, systemPrompt } = await req.json();
+    const { cycle, bankroll, systemPrompt, liveTrading } = await req.json();
     const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
     if (!LOVABLE_API_KEY) throw new Error("LOVABLE_API_KEY not configured");
 
@@ -80,7 +80,11 @@ serve(async (req) => {
       fetchBinanceVol(),
     ]);
 
-    const userMessage = `Cycle ${cycle}. Bankroll: ${bankroll}.
+    const modeNote = liveTrading
+      ? `\n⚡ LIVE TRADING MODE: Your recommendations will be executed as REAL orders on Polymarket. Be conservative with sizing. Focus on markets with high liquidity and imminent resolution. Include token_id if available from the market data.`
+      : `\n📊 SIMULATION MODE: This is a paper trading simulation.`;
+
+    const userMessage = `Cycle ${cycle}. Bankroll: ${bankroll}.${modeNote}
 
 LIVE DATA:
 ${polyData}

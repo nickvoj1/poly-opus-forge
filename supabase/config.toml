@@ -2,3 +2,6 @@ project_id = "rdwuqmrjlknvtohzicqe"
 
 [functions.run-cycle]
 verify_jwt = false
+
+[functions.polymarket-trade]
+verify_jwt = false

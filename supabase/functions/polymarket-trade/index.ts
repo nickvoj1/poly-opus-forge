@@ -1,0 +1,447 @@
+import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers":
+    "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
+};
+
+const CLOB_HOST = "https://clob.polymarket.com";
+
+// Build HMAC-SHA256 signature for L2 auth
+async function buildHmacSignature(
+  secret: string,
+  timestamp: number,
+  method: string,
+  requestPath: string,
+  body?: string
+): Promise<string> {
+  let message = `${timestamp}${method}${requestPath}`;
+  if (body !== undefined) {
+    message += body;
+  }
+
+  // Decode base64 secret - handle both standard and URL-safe base64
+  const cleanSecret = secret.replace(/-/g, '+').replace(/_/g, '/');
+  const binaryStr = atob(cleanSecret);
+  const keyData = new Uint8Array(binaryStr.length);
+  for (let i = 0; i < binaryStr.length; i++) {
+    keyData[i] = binaryStr.charCodeAt(i);
+  }
+
+  const cryptoKey = await crypto.subtle.importKey(
+    "raw",
+    keyData,
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+
+  const messageBuffer = new TextEncoder().encode(message);
+  const signatureBuffer = await crypto.subtle.sign("HMAC", cryptoKey, messageBuffer);
+  // Encode result as base64
+  const sigArray = new Uint8Array(signatureBuffer);
+  let binary = '';
+  for (let i = 0; i < sigArray.length; i++) {
+    binary += String.fromCharCode(sigArray[i]);
+  }
+  return btoa(binary);
+}
+
+function getL2Headers(
+  apiKey: string,
+  secret: string,
+  passphrase: string,
+  timestamp: number,
+  method: string,
+  requestPath: string,
+  body?: string
+) {
+  return buildHmacSignature(secret, timestamp, method, requestPath, body).then(
+    (sig) => ({
+      "POLY-ADDRESS": apiKey,
+      "POLY-SIGNATURE": sig,
+      "POLY-TIMESTAMP": `${timestamp}`,
+      "POLY-API-KEY": apiKey,
+      "POLY-PASSPHRASE": passphrase,
+    })
+  );
+}
+
+// Get current orderbook prices for a token
+async function getPrice(tokenId: string): Promise<any> {
+  const res = await fetch(`${CLOB_HOST}/price?token_id=${tokenId}&side=buy`);
+  if (!res.ok) {
+    const buyErr = await res.text();
+    console.error("Price fetch error:", buyErr);
+    return null;
+  }
+  const buyPrice = await res.json();
+
+  const sellRes = await fetch(`${CLOB_HOST}/price?token_id=${tokenId}&side=sell`);
+  const sellPrice = sellRes.ok ? await sellRes.json() : null;
+
+  return { buy: buyPrice, sell: sellPrice };
+}
+
+// Get orderbook for a token
+async function getOrderbook(tokenId: string): Promise<any> {
+  const res = await fetch(`${CLOB_HOST}/book?token_id=${tokenId}`);
+  if (!res.ok) return null;
+  return await res.json();
+}
+
+// Get midpoint price
+async function getMidpoint(tokenId: string): Promise<string | null> {
+  const res = await fetch(`${CLOB_HOST}/midpoint?token_id=${tokenId}`);
+  if (!res.ok) return null;
+  const data = await res.json();
+  return data.mid;
+}
+
+// Fetch market by condition_id from Gamma API to get token IDs
+async function getMarketTokens(conditionId: string): Promise<any> {
+  const res = await fetch(`https://gamma-api.polymarket.com/markets?condition_id=${conditionId}`);
+  if (!res.ok) return null;
+  const markets = await res.json();
+  return markets[0] || null;
+}
+
+// Search markets by slug or question
+async function searchMarkets(query: string): Promise<any[]> {
+  const res = await fetch(
+    `https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=10&query=${encodeURIComponent(query)}`
+  );
+  if (!res.ok) return [];
+  return await res.json();
+}
+
+// Get user positions from Data API (public, requires wallet address)
+async function getPositions(walletAddress: string): Promise<any> {
+  const res = await fetch(
+    `https://data-api.polymarket.com/positions?user=${walletAddress}`
+  );
+
+  if (!res.ok) {
+    const errText = await res.text();
+    console.error("Positions fetch error:", res.status, errText);
+    return { error: errText, status: res.status };
+  }
+
+  return await res.json();
+}
+
+// Derive wallet address from private key using basic secp256k1
+// We use the CLOB API's /auth/api-keys endpoint to verify credentials
+async function verifyCredentials(apiKey: string, secret: string, passphrase: string): Promise<boolean> {
+  const timestamp = Math.floor(Date.now() / 1000);
+  const method = "GET";
+  const path = "/auth/api-keys";
+
+  const headers = await getL2Headers(apiKey, secret, passphrase, timestamp, method, path);
+
+  const res = await fetch(`${CLOB_HOST}${path}`, {
+    method,
+    headers: {
+      ...headers,
+      "Content-Type": "application/json",
+    },
+  });
+
+  return res.ok;
+}
+
+// Get user balance info
+async function getBalanceAllowance(
+  apiKey: string,
+  secret: string,
+  passphrase: string,
+  tokenId: string
+): Promise<any> {
+  const timestamp = Math.floor(Date.now() / 1000);
+  const method = "GET";
+  const path = `/data/balance-allowance?asset_type=CONDITIONAL&token_id=${tokenId}`;
+
+  const headers = await getL2Headers(apiKey, secret, passphrase, timestamp, method, path);
+
+  const res = await fetch(`${CLOB_HOST}${path}`, {
+    method,
+    headers: {
+      ...headers,
+      "Content-Type": "application/json",
+    },
+  });
+
+  if (!res.ok) {
+    const errText = await res.text();
+    return { error: errText };
+  }
+
+  return await res.json();
+}
+
+// Place a market order via CLOB API
+// Note: This is a simplified version - real order signing requires EIP-712
+// For now, we use the CLOB's market order endpoint which handles matching
+async function placeOrder(
+  apiKey: string,
+  secret: string,
+  passphrase: string,
+  tokenId: string,
+  side: "BUY" | "SELL",
+  size: number,
+  price: number
+): Promise<any> {
+  const timestamp = Math.floor(Date.now() / 1000);
+  const method = "POST";
+  const path = "/order";
+
+  // Build the order payload
+  // The order needs to be signed with EIP-712 using the wallet private key
+  // This requires the full signing flow from @polymarket/order-utils
+  const orderPayload = {
+    order: {
+      tokenID: tokenId,
+      price: price,
+      size: size,
+      side: side,
+    },
+    owner: apiKey,
+    orderType: "FOK", // Fill or Kill for market-like orders
+  };
+
+  const bodyStr = JSON.stringify(orderPayload);
+  const headers = await getL2Headers(apiKey, secret, passphrase, timestamp, method, path, bodyStr);
+
+  const res = await fetch(`${CLOB_HOST}${path}`, {
+    method,
+    headers: {
+      ...headers,
+      "Content-Type": "application/json",
+    },
+    body: bodyStr,
+  });
+
+  const responseText = await res.text();
+  console.log(`Order response [${res.status}]:`, responseText);
+
+  if (!res.ok) {
+    return { error: responseText, status: res.status };
+  }
+
+  try {
+    return JSON.parse(responseText);
+  } catch {
+    return { result: responseText };
+  }
+}
+
+// Get open orders
+async function getOpenOrders(apiKey: string, secret: string, passphrase: string): Promise<any> {
+  const timestamp = Math.floor(Date.now() / 1000);
+  const method = "GET";
+  const path = "/data/orders";
+
+  const headers = await getL2Headers(apiKey, secret, passphrase, timestamp, method, path);
+
+  const res = await fetch(`${CLOB_HOST}${path}`, {
+    method,
+    headers: {
+      ...headers,
+      "Content-Type": "application/json",
+    },
+  });
+
+  if (!res.ok) {
+    const errText = await res.text();
+    return { error: errText, status: res.status };
+  }
+
+  return await res.json();
+}
+
+// Get trade history
+async function getTradeHistory(apiKey: string, secret: string, passphrase: string): Promise<any> {
+  const timestamp = Math.floor(Date.now() / 1000);
+  const method = "GET";
+  const path = "/data/trades";
+
+  const headers = await getL2Headers(apiKey, secret, passphrase, timestamp, method, path);
+
+  const res = await fetch(`${CLOB_HOST}${path}`, {
+    method,
+    headers: {
+      ...headers,
+      "Content-Type": "application/json",
+    },
+  });
+
+  if (!res.ok) {
+    const errText = await res.text();
+    return { error: errText, status: res.status };
+  }
+
+  return await res.json();
+}
+
+serve(async (req) => {
+  if (req.method === "OPTIONS") {
+    return new Response(null, { headers: corsHeaders });
+  }
+
+  try {
+    const POLY_API_KEY = Deno.env.get("POLYMARKET_API_KEY");
+    const POLY_SECRET = Deno.env.get("POLYMARKET_API_SECRET");
+    const POLY_PASSPHRASE = Deno.env.get("POLYMARKET_PASSPHRASE");
+    const POLY_WALLET_KEY = Deno.env.get("POLYMARKET_WALLET_PRIVATE_KEY");
+
+    // Derive wallet address from private key if available
+    let walletAddress = "";
+    if (POLY_WALLET_KEY) {
+      try {
+        // Use ethers to derive address from private key
+        const { ethers } = await import("https://esm.sh/ethers@5.7.2");
+        const wallet = new ethers.Wallet(POLY_WALLET_KEY.startsWith("0x") ? POLY_WALLET_KEY : `0x${POLY_WALLET_KEY}`);
+        walletAddress = wallet.address.toLowerCase();
+      } catch (e) {
+        console.error("Failed to derive wallet address:", e);
+      }
+    }
+
+    const { action, ...params } = await req.json();
+
+    switch (action) {
+      case "get-prices": {
+        // Get prices for multiple token IDs
+        const { tokenIds } = params;
+        const prices: Record<string, any> = {};
+        for (const tid of (tokenIds || [])) {
+          const mid = await getMidpoint(tid);
+          prices[tid] = mid;
+        }
+        return new Response(JSON.stringify({ prices }), {
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      case "get-orderbook": {
+        const book = await getOrderbook(params.tokenId);
+        return new Response(JSON.stringify(book || { error: "Not found" }), {
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      case "search-markets": {
+        const markets = await searchMarkets(params.query || "");
+        return new Response(JSON.stringify({ markets }), {
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      case "get-market-tokens": {
+        const market = await getMarketTokens(params.conditionId);
+        return new Response(JSON.stringify(market || { error: "Not found" }), {
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      case "get-positions": {
+        if (!walletAddress) {
+          return new Response(
+            JSON.stringify({ error: "Wallet private key not configured" }),
+            { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+          );
+        }
+        const positions = await getPositions(walletAddress);
+        return new Response(JSON.stringify(positions), {
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      case "verify-connection": {
+        const connected = !!(POLY_API_KEY && POLY_SECRET && POLY_PASSPHRASE && walletAddress);
+        let verified = false;
+        if (connected) {
+          verified = await verifyCredentials(POLY_API_KEY!, POLY_SECRET!, POLY_PASSPHRASE!);
+        }
+        return new Response(JSON.stringify({ 
+          connected, 
+          verified, 
+          walletAddress: walletAddress || null,
+        }), {
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      case "get-open-orders": {
+        if (!POLY_API_KEY || !POLY_SECRET || !POLY_PASSPHRASE) {
+          return new Response(
+            JSON.stringify({ error: "Polymarket API credentials not configured" }),
+            { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+          );
+        }
+        const orders = await getOpenOrders(POLY_API_KEY, POLY_SECRET, POLY_PASSPHRASE);
+        return new Response(JSON.stringify(orders), {
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      case "get-trades": {
+        if (!POLY_API_KEY || !POLY_SECRET || !POLY_PASSPHRASE) {
+          return new Response(
+            JSON.stringify({ error: "Polymarket API credentials not configured" }),
+            { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+          );
+        }
+        const trades = await getTradeHistory(POLY_API_KEY, POLY_SECRET, POLY_PASSPHRASE);
+        return new Response(JSON.stringify(trades), {
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      case "place-trade": {
+        if (!POLY_API_KEY || !POLY_SECRET || !POLY_PASSPHRASE) {
+          return new Response(
+            JSON.stringify({ error: "Polymarket API credentials not configured" }),
+            { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+          );
+        }
+
+        const { tokenId, side, size, price } = params;
+        if (!tokenId || !side || !size || !price) {
+          return new Response(
+            JSON.stringify({ error: "Missing required fields: tokenId, side, size, price" }),
+            { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+          );
+        }
+
+        const result = await placeOrder(
+          POLY_API_KEY,
+          POLY_SECRET,
+          POLY_PASSPHRASE,
+          tokenId,
+          side,
+          size,
+          price
+        );
+
+        return new Response(JSON.stringify(result), {
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+          status: result.error ? 400 : 200,
+        });
+      }
+
+      default:
+        return new Response(
+          JSON.stringify({ error: `Unknown action: ${action}` }),
+          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+    }
+  } catch (e) {
+    console.error("polymarket-trade error:", e);
+    return new Response(
+      JSON.stringify({ error: e instanceof Error ? e.message : "Unknown error" }),
+      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+    );
+  }
+});
