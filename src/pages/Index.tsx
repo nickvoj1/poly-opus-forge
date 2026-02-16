@@ -223,7 +223,7 @@ const Dashboard = () => {
       const trades: any[] = [];
       if (state.liveTrading && data.hypos && data.hypos.length > 0) {
         addLog(`⚡ Live mode: executing ${data.hypos.length} trades...`);
-        for (const hypo of data.hypos.slice(0, 3)) { // Max 3 trades per cycle
+        for (const hypo of data.hypos.slice(0, 10)) { // Max 10 trades per cycle for aggressive Kelly
           const result = await executeTrade(hypo);
           trades.push({
             market: hypo.market,

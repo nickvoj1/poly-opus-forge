@@ -14,16 +14,23 @@ async function fetchPolymarket(): Promise<{ text: string; marketsMap: Record<str
     const endMin = now.toISOString();
     const endMax = soon.toISOString();
 
+    // Fetch high-volume markets ending soon (prioritize >$10k volume)
     const urgentRes = await fetch(
-      `https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=30&order=endDate&ascending=true&end_date_min=${endMin}&end_date_max=${endMax}`
+      `https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=50&order=endDate&ascending=true&end_date_min=${endMin}&end_date_max=${endMax}`
     );
     const urgentMarkets = await urgentRes.json();
 
     const hourMax = new Date(now.getTime() + 60 * 60 * 1000).toISOString();
     const nearRes = await fetch(
-      `https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=30&order=endDate&ascending=true&end_date_min=${endMin}&end_date_max=${hourMax}`
+      `https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=50&order=endDate&ascending=true&end_date_min=${endMin}&end_date_max=${hourMax}`
     );
     const nearMarkets = await nearRes.json();
+
+    // Also fetch high-volume trending markets (not time-bound)
+    const trendingRes = await fetch(
+      `https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=30&order=volume&ascending=false`
+    );
+    const trendingMarkets = await trendingRes.json();
 
     // Build a lookup map of market question -> { conditionId, slug }
     const marketsMap: Record<string, any> = {};
@@ -40,20 +47,33 @@ async function fetchPolymarket(): Promise<{ text: string; marketsMap: Record<str
       return `${m.question} | conditionId: ${m.conditionId || "?"} | price: ${m.outcomePrices} | vol: $${Math.round(m.volumeNum || 0)} | liq: $${Math.round(m.liquidityNum || 0)} | ENDS IN: ${minsLeft} min`;
     };
 
+    // Filter for high-volume markets (>$10k volume or >$5k liquidity)
+    const isHighVolume = (m: any) => (m.volumeNum || 0) >= 10000 || (m.liquidityNum || 0) >= 5000;
+
     const urgentList = (Array.isArray(urgentMarkets) ? urgentMarkets : [])
-      .slice(0, 10)
+      .filter(isHighVolume)
+      .slice(0, 15)
       .map(formatMarket)
       .join("\n");
 
     const nearList = (Array.isArray(nearMarkets) ? nearMarkets : [])
       .filter((m: any) => !urgentMarkets?.some?.((u: any) => u.id === m.id))
+      .filter(isHighVolume)
+      .slice(0, 15)
+      .map(formatMarket)
+      .join("\n");
+
+    const trendingList = (Array.isArray(trendingMarkets) ? trendingMarkets : [])
+      .filter((m: any) => !urgentMarkets?.some?.((u: any) => u.id === m.id) && !nearMarkets?.some?.((n: any) => n.id === m.id))
+      .filter(isHighVolume)
       .slice(0, 10)
       .map(formatMarket)
       .join("\n");
 
     const output = [
-      urgentList ? `⚡ ENDING IN <10 MIN:\n${urgentList}` : "",
-      nearList ? `🕐 ENDING IN <1 HOUR:\n${nearList}` : "",
+      urgentList ? `⚡ ENDING IN <10 MIN (HIGH VOL):\n${urgentList}` : "",
+      nearList ? `🕐 ENDING IN <1 HOUR (HIGH VOL):\n${nearList}` : "",
+      trendingList ? `🔥 TRENDING HIGH-VOLUME:\n${trendingList}` : "",
     ].filter(Boolean).join("\n\n");
 
     return {
@@ -95,8 +115,8 @@ serve(async (req) => {
     const marketsMap = polyResult.marketsMap;
 
     const modeNote = liveTrading
-      ? `\n⚡ LIVE TRADING MODE: Real orders will be placed. Be VERY conservative. Max 1-2 trades per cycle. Focus ONLY on markets ending in <5 minutes with clear directional signals.`
-      : `\n📊 SIMULATION MODE: Paper trading simulation.`;
+      ? `\n⚡ LIVE TRADING MODE: Aggressive Kelly sizing. Max $2.70 per trade (15% bankroll). Target 20+ trades/day across 4 compounding sessions.`
+      : `\n📊 SIMULATION MODE: Aggressive Kelly sizing. 15% bankroll per trade. Compound winners 4x/day.`;
 
     const userMessage = `Cycle ${cycle}. Bankroll: ${bankroll}.${modeNote}
 
@@ -117,19 +137,32 @@ ${systemPrompt}`;
         messages: [
           {
             role: "system",
-            content: `You are an expert quantitative trading engine for Polymarket prediction markets. You MUST respond with valid JSON only. No markdown, no explanation, no code blocks.
+           content: `You are an aggressive quantitative trading engine for Polymarket. You MUST respond with valid JSON only. No markdown, no code blocks.
 
-STRATEGY RULES:
-- ONLY trade markets ending within 10 minutes where outcome is highly predictable
-- For crypto Up/Down markets: check BTC 24h change%. If negative → SELL (bet on Down/NO). If positive → BUY (bet on Up/YES). This is the MOST RELIABLE signal.
-- Parse "outcomePrices" carefully: format is "[YesPrice, NoPrice]". If you SELL (bet NO wins), your edge = NoPrice when NO wins (payout = size * (1 - entry_price)). If you BUY (bet YES wins), your edge = YesPrice.  
-- NEVER buy YES at price > 0.65 or buy NO at price > 0.65 — the risk/reward is terrible
-- PREFER trades where your side is priced 0.30-0.55 (maximum edge)
-- Size: never more than 5% of bankroll per trade. For live trading, max $1 per trade.
-- If no clear edge exists, return EMPTY hypos array — skipping is better than gambling
-- Include "price" field with the ACTUAL market price you're entering at
+KELLY CRITERION STRATEGY (Target: 250% daily return):
+1. EDGE DETECTION: Calculate TRUE probability using BTC momentum, news sentiment, whale flows, volume patterns.
+   - Edge = TRUE_prob - market_price. ONLY trade when edge > 20% (0.20).
+   - For crypto markets: BTC 24h change is primary signal. Negative → SELL/NO, Positive → BUY/YES.
+   - For non-crypto: use volume spikes, liquidity shifts, and time decay as signals.
 
-CRITICAL: In the "market" field, use the EXACT human-readable market question. Do NOT use conditionId hashes.`,
+2. KELLY SIZING: f* = (p*b - q) / b where p=win_prob, q=1-p, b=odds.
+   - Use AGGRESSIVE Kelly: bet 15% of bankroll per trade (f* capped at 15%).
+   - Live mode: max $2.70 per trade. Sim mode: 15% of bankroll.
+   - This means ~54 shares at $0.05 risk per share.
+
+3. MARKET SELECTION:
+   - ONLY high-volume markets (volume > $10,000 or liquidity > $5,000).
+   - Markets ending in <60 minutes preferred, <10 min is ideal for time decay edge.
+   - Parse "outcomePrices" as "[YesPrice, NoPrice]". Trade the side priced 0.25-0.65.
+   - SKIP markets with no clear edge. Empty hypos is fine.
+
+4. COMPOUNDING: Target 5+ trades per cycle. Roll winners into next cycle bankroll.
+   - 20% edge × 15% Kelly × 20 bets/day = 250% daily target.
+   - Max drawdown tolerance: 30%.
+
+5. OUTPUT each hypo with: "market" (exact question), "action" (BUY/SELL), "size" (dollar amount), "pnl" (0), "price" (entry price), "edge" (estimated edge), "kelly_f" (kelly fraction used).
+
+CRITICAL: Use EXACT human-readable market question in "market" field. Include "price" with ACTUAL market price.`,
           },
           { role: "user", content: userMessage },
         ],
