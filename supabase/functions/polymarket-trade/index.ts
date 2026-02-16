@@ -134,22 +134,32 @@ async function getPositions(walletAddress: string): Promise<any> {
 
 // Derive wallet address from private key using basic secp256k1
 // We use the CLOB API's /auth/api-keys endpoint to verify credentials
-async function verifyCredentials(apiKey: string, secret: string, passphrase: string, walletAddress: string): Promise<boolean> {
+async function verifyCredentials(apiKey: string, secret: string, passphrase: string, walletAddress: string): Promise<{ ok: boolean; status: number; body: string; headers: Record<string, string> }> {
   const timestamp = Math.floor(Date.now() / 1000);
   const method = "GET";
   const path = "/auth/api-keys";
 
-  const headers = await getL2Headers(apiKey, secret, passphrase, timestamp, method, path, undefined, walletAddress);
+  const reqHeaders = await getL2Headers(apiKey, secret, passphrase, timestamp, method, path, undefined, walletAddress);
+
+  console.log("verifyCredentials request:", JSON.stringify({
+    url: `${CLOB_HOST}${path}`,
+    headers: reqHeaders,
+    walletAddress,
+    apiKey,
+  }));
 
   const res = await fetch(`${CLOB_HOST}${path}`, {
     method,
     headers: {
-      ...headers,
+      ...reqHeaders,
       "Content-Type": "application/json",
     },
   });
 
-  return res.ok;
+  const body = await res.text();
+  console.log(`verifyCredentials response [${res.status}]:`, body);
+
+  return { ok: res.ok, status: res.status, body, headers: Object.fromEntries(res.headers.entries()) };
 }
 
 // Get user balance info
@@ -431,12 +441,14 @@ serve(async (req) => {
         let verified = false;
         let balance = { usdc: 0, matic: 0 };
         let polymarketUsdc = 0;
+        let verifyDebug: any = null;
         if (connected) {
-          const [v, onChainBal] = await Promise.all([
+          const [verifyResult, onChainBal] = await Promise.all([
             verifyCredentials(POLY_API_KEY!, POLY_SECRET!, POLY_PASSPHRASE!, eoaAddress || walletAddress),
             getWalletBalance(onChainAddress || walletAddress),
           ]);
-          verified = v;
+          verified = verifyResult.ok;
+          verifyDebug = { status: verifyResult.status, body: verifyResult.body };
           balance = onChainBal;
           
           // Get Polymarket proxy USDC balance
@@ -458,6 +470,8 @@ serve(async (req) => {
           connected, 
           verified, 
           walletAddress: walletAddress || null,
+          eoaAddress: eoaAddress || null,
+          verifyDebug,
           balance: { usdc: balance.usdc + polymarketUsdc, matic: balance.matic, onChainUsdc: balance.usdc, polymarketUsdc },
         }), {
           headers: { ...corsHeaders, "Content-Type": "application/json" },
