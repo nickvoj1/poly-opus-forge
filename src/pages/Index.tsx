@@ -157,10 +157,10 @@ const Dashboard = () => {
 
       addLog(`📊 ${hypo.market}: price=$${price.toFixed(4)}, size=${hypo.size}`);
 
-      // Place the trade
-      const { data: tradeResult } = await supabase.functions.invoke("polymarket-trade", {
+      // Sign the order server-side (EIP-712)
+      const { data: signResult } = await supabase.functions.invoke("polymarket-trade", {
         body: {
-          action: "place-trade",
+          action: "sign-order",
           tokenId,
           side: hypo.action === "BUY" ? "BUY" : "SELL",
           size: hypo.size,
@@ -168,13 +168,36 @@ const Dashboard = () => {
         },
       });
 
-      if (tradeResult?.error) {
-        addLog(`❌ Trade failed: ${tradeResult.error}`);
-        return { status: 'failed', error: tradeResult.error };
+      if (signResult?.error) {
+        addLog(`❌ Sign failed: ${signResult.error}`);
+        return { status: 'failed', error: signResult.error };
       }
 
-      addLog(`✅ Trade executed: ${hypo.action} ${hypo.size} @ $${price.toFixed(4)}`);
-      return { status: 'filled', price };
+      // Submit the signed order from the browser (bypasses server geoblock)
+      addLog(`📝 Order signed, submitting from browser...`);
+      try {
+        const submitRes = await fetch(signResult.submitUrl, {
+          method: "POST",
+          headers: {
+            ...signResult.headers,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(signResult.signedOrder),
+        });
+        const submitBody = await submitRes.text();
+        
+        if (!submitRes.ok) {
+          addLog(`❌ Submit failed [${submitRes.status}]: ${submitBody}`);
+          return { status: 'failed', error: submitBody };
+        }
+
+        const submitResult = JSON.parse(submitBody);
+        addLog(`✅ Trade executed: ${hypo.action} ${hypo.size} @ $${price.toFixed(4)}`);
+        return { status: 'filled', price, result: submitResult };
+      } catch (submitErr: any) {
+        addLog(`❌ Submit error: ${submitErr.message}`);
+        return { status: 'failed', error: submitErr.message };
+      }
     } catch (e: any) {
       addLog(`❌ Trade error: ${e.message}`);
       return { status: 'failed', error: e.message };
