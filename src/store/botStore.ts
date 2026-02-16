@@ -40,6 +40,20 @@ export interface Position {
   pnl?: number;
 }
 
+interface BetRecord {
+  id: string;
+  cycle: number;
+  market: string;
+  side: string;
+  recommended_price: number;
+  size: number;
+  status: 'pending' | 'won' | 'lost' | 'void' | 'expired';
+  resolution: string | null;
+  pnl: number | null;
+  is_live: boolean;
+  created_at: string;
+}
+
 interface BotState {
   running: boolean;
   cycle: number;
@@ -55,6 +69,8 @@ interface BotState {
   positions: Position[];
   tradeHistory: TradeExecution[];
   apiConnected: boolean;
+  bets: BetRecord[];
+  realPnL: number;
   setRunning: (v: boolean) => void;
   addCycleResult: (r: CycleResult) => void;
   addLog: (msg: string) => void;
@@ -63,6 +79,8 @@ interface BotState {
   setPositions: (p: Position[]) => void;
   addTrade: (t: TradeExecution) => void;
   setApiConnected: (v: boolean) => void;
+  setBets: (b: BetRecord[]) => void;
+  setRealPnL: (p: number) => void;
   reset: () => void;
 }
 
@@ -93,6 +111,8 @@ export const useBotStore = create<BotState>((set) => ({
   positions: [],
   tradeHistory: [],
   apiConnected: false,
+  bets: [],
+  realPnL: 0,
   setRunning: (v) => set({ running: v }),
   addCycleResult: (r) =>
     set((s) => ({
@@ -112,6 +132,8 @@ export const useBotStore = create<BotState>((set) => ({
   setPositions: (p) => set({ positions: p }),
   addTrade: (t) => set((s) => ({ tradeHistory: [...s.tradeHistory, t] })),
   setApiConnected: (v) => set({ apiConnected: v }),
+  setBets: (b) => set({ bets: b }),
+  setRealPnL: (p) => set({ realPnL: p }),
   reset: () =>
     set({
       running: false,
@@ -124,5 +146,7 @@ export const useBotStore = create<BotState>((set) => ({
       logs: [],
       rules: [],
       tradeHistory: [],
+      bets: [],
+      realPnL: 0,
     }),
 }));

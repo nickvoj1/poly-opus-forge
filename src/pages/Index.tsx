@@ -1,5 +1,5 @@
 import { useCallback, useRef, useEffect, useState } from "react";
-import { Play, Square, RotateCcw, DollarSign, TrendingUp, BarChart3, AlertTriangle, Wifi, WifiOff, Zap } from "lucide-react";
+import { Play, Square, RotateCcw, DollarSign, TrendingUp, BarChart3, AlertTriangle, Wifi, WifiOff, Zap, CheckCircle, XCircle, Clock } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { StatCard } from "@/components/StatCard";
 import { PnLChart } from "@/components/PnLChart";
@@ -15,6 +15,7 @@ const Dashboard = () => {
     running, cycle, bankroll, sharpe, mdd, pnlHistory, hypos,
     setRunning, addCycleResult, addLog, reset, systemPrompt,
     liveTrading, setLiveTrading, positions, setPositions, apiConnected, setApiConnected,
+    bets, setBets, realPnL, setRealPnL,
   } = useBotStore();
   const abortRef = useRef<AbortController | null>(null);
   const [walletBalance, setWalletBalance] = useState<{ usdc: number; matic: number } | null>(null);
@@ -22,6 +23,8 @@ const Dashboard = () => {
   // Check API connection on mount
   useEffect(() => {
     checkApiConnection();
+    fetchBets();
+    checkResolutions();
   }, []);
 
   const checkApiConnection = useCallback(async () => {
@@ -57,6 +60,36 @@ const Dashboard = () => {
       setApiConnected(false);
     }
   }, [setApiConnected, addLog, setPositions]);
+
+  // Fetch all bets from the database
+  const fetchBets = useCallback(async () => {
+    try {
+      const { data, error } = await supabase
+        .from("bets")
+        .select("*")
+        .order("created_at", { ascending: false })
+        .limit(100);
+      if (!error && data) {
+        setBets(data as any);
+        const totalPnL = data
+          .filter((b: any) => b.pnl !== null)
+          .reduce((sum: number, b: any) => sum + Number(b.pnl), 0);
+        setRealPnL(totalPnL);
+      }
+    } catch {}
+  }, [setBets, setRealPnL]);
+
+  // Check resolutions for pending bets
+  const checkResolutions = useCallback(async () => {
+    try {
+      const { data, error } = await supabase.functions.invoke("check-resolutions");
+      if (!error && data?.resolved > 0) {
+        addLog(`🎯 Resolved ${data.resolved} bets: ${data.results.map((r: any) => `${r.market} → ${r.status} ($${r.pnl?.toFixed(2)})`).join(", ")}`);
+        toast.success(`${data.resolved} bet(s) resolved!`);
+        await fetchBets();
+      }
+    } catch {}
+  }, [addLog, fetchBets]);
 
   // Execute trades via polymarket-trade function
   const executeTrade = useCallback(async (hypo: any) => {
@@ -205,13 +238,16 @@ const Dashboard = () => {
         await checkApiConnection();
       }
 
+      // Check resolutions for any pending bets & refresh bet list
+      await checkResolutions();
+
       return true;
     } catch (e: any) {
       addLog(`ERROR: ${e.message}`);
       toast.error("Cycle failed: " + e.message);
       return false;
     }
-  }, [addCycleResult, addLog, systemPrompt, executeTrade, checkApiConnection]);
+  }, [addCycleResult, addLog, systemPrompt, executeTrade, checkApiConnection, checkResolutions]);
 
   const startBot = useCallback(async () => {
     const state = useBotStore.getState();
@@ -321,7 +357,7 @@ const Dashboard = () => {
       )}
 
       {/* Stat cards */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
         <StatCard 
           label={liveTrading ? "Wallet (USDC)" : "Bankroll"} 
           value={liveTrading && walletBalance ? walletBalance.usdc : bankroll} 
@@ -329,10 +365,64 @@ const Dashboard = () => {
           icon={<DollarSign size={16} />} 
           variant={(liveTrading && walletBalance ? walletBalance.usdc : bankroll) >= 100 ? "positive" : "negative"} 
         />
+        <StatCard 
+          label="Real P&L" 
+          value={realPnL} 
+          prefix="$" 
+          icon={<TrendingUp size={16} />} 
+          variant={realPnL > 0 ? "positive" : realPnL < 0 ? "negative" : "default"} 
+        />
         <StatCard label="Sharpe" value={sharpe} icon={<TrendingUp size={16} />} variant={sharpe > 0 ? "positive" : "default"} />
         <StatCard label="Cycles" value={cycle} icon={<BarChart3 size={16} />} />
         <StatCard label="Max DD" value={mdd} suffix="%" icon={<AlertTriangle size={16} />} variant={mdd > 10 ? "negative" : "default"} />
       </div>
+
+      {/* Bet Resolution Tracking */}
+      {bets.length > 0 && (
+        <div className="bg-card border border-border rounded-lg p-4 glow-border">
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="text-sm font-mono text-primary">BET TRACKING</h3>
+            <div className="flex items-center gap-3 text-xs font-mono">
+              <span className="flex items-center gap-1 text-primary">
+                <CheckCircle size={12} /> {bets.filter(b => b.status === 'won').length} won
+              </span>
+              <span className="flex items-center gap-1 text-destructive">
+                <XCircle size={12} /> {bets.filter(b => b.status === 'lost').length} lost
+              </span>
+              <span className="flex items-center gap-1 text-muted-foreground">
+                <Clock size={12} /> {bets.filter(b => b.status === 'pending').length} pending
+              </span>
+              <Button size="sm" variant="outline" className="h-6 text-xs font-mono" onClick={checkResolutions}>
+                Check Now
+              </Button>
+            </div>
+          </div>
+          <div className="space-y-1 max-h-[200px] overflow-y-auto">
+            {bets.slice(0, 20).map((bet) => (
+              <div key={bet.id} className="flex items-center justify-between text-xs font-mono py-1.5 border-b border-border/50 last:border-0">
+                <div className="flex items-center gap-2 min-w-0">
+                  {bet.status === 'won' && <CheckCircle size={12} className="text-primary shrink-0" />}
+                  {bet.status === 'lost' && <XCircle size={12} className="text-destructive shrink-0" />}
+                  {bet.status === 'pending' && <Clock size={12} className="text-muted-foreground shrink-0" />}
+                  <span className="text-foreground/80 truncate max-w-[250px]">{bet.market}</span>
+                </div>
+                <div className="flex items-center gap-3 shrink-0">
+                  <span className="text-muted-foreground">{bet.side}</span>
+                  <span className="text-muted-foreground">@{Number(bet.recommended_price).toFixed(2)}</span>
+                  <span className="text-muted-foreground">sz:{Number(bet.size).toFixed(1)}</span>
+                  {bet.pnl !== null ? (
+                    <span className={Number(bet.pnl) >= 0 ? "text-primary" : "text-destructive"}>
+                      ${Number(bet.pnl).toFixed(2)}
+                    </span>
+                  ) : (
+                    <span className="text-muted-foreground">—</span>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Positions (when live) */}
       {liveTrading && positions.length > 0 && (
