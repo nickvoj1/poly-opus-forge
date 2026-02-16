@@ -423,17 +423,35 @@ serve(async (req) => {
         const connected = !!(POLY_API_KEY && POLY_SECRET && POLY_PASSPHRASE && walletAddress);
         let verified = false;
         let balance = { usdc: 0, matic: 0 };
+        let polymarketUsdc = 0;
         if (connected) {
-          [verified, balance] = await Promise.all([
+          const [v, onChainBal] = await Promise.all([
             verifyCredentials(POLY_API_KEY!, POLY_SECRET!, POLY_PASSPHRASE!),
             getWalletBalance(walletAddress),
           ]);
+          verified = v;
+          balance = onChainBal;
+          
+          // Get Polymarket proxy USDC balance
+          try {
+            const timestamp = Math.floor(Date.now() / 1000);
+            const path = `/data/balance-allowance?asset_type=COLLATERAL`;
+            const headers = await getL2Headers(POLY_API_KEY!, POLY_SECRET!, POLY_PASSPHRASE!, timestamp, "GET", path);
+            const res = await fetch(`${CLOB_HOST}${path}`, {
+              method: "GET",
+              headers: { ...headers, "Content-Type": "application/json" },
+            });
+            if (res.ok) {
+              const data = await res.json();
+              polymarketUsdc = parseFloat(data.balance || "0") / 1e6;
+            }
+          } catch {}
         }
         return new Response(JSON.stringify({ 
           connected, 
           verified, 
           walletAddress: walletAddress || null,
-          balance,
+          balance: { usdc: balance.usdc + polymarketUsdc, matic: balance.matic, onChainUsdc: balance.usdc, polymarketUsdc },
         }), {
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
@@ -446,8 +464,36 @@ serve(async (req) => {
             { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
           );
         }
-        const bal = await getWalletBalance(walletAddress);
-        return new Response(JSON.stringify(bal), {
+        // Get on-chain balance
+        const onChainBal = await getWalletBalance(walletAddress);
+        
+        // Also get Polymarket proxy wallet USDC balance via CLOB API
+        let polymarketUsdc = 0;
+        if (POLY_API_KEY && POLY_SECRET && POLY_PASSPHRASE) {
+          try {
+            const timestamp = Math.floor(Date.now() / 1000);
+            const path = `/data/balance-allowance?asset_type=COLLATERAL`;
+            const headers = await getL2Headers(POLY_API_KEY, POLY_SECRET, POLY_PASSPHRASE, timestamp, "GET", path);
+            const res = await fetch(`${CLOB_HOST}${path}`, {
+              method: "GET",
+              headers: { ...headers, "Content-Type": "application/json" },
+            });
+            if (res.ok) {
+              const data = await res.json();
+              polymarketUsdc = parseFloat(data.balance || "0") / 1e6; // USDC has 6 decimals
+            }
+          } catch (e) {
+            console.error("Error fetching Polymarket USDC balance:", e);
+          }
+        }
+        
+        const totalUsdc = onChainBal.usdc + polymarketUsdc;
+        return new Response(JSON.stringify({ 
+          usdc: totalUsdc, 
+          matic: onChainBal.matic,
+          onChainUsdc: onChainBal.usdc,
+          polymarketUsdc,
+        }), {
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
       }
