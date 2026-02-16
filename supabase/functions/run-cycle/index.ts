@@ -7,30 +7,37 @@ const corsHeaders = {
     "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
 };
 
-async function fetchPolymarket(): Promise<string> {
+async function fetchPolymarket(): Promise<{ text: string; marketsMap: Record<string, any> }> {
   try {
     const now = new Date();
-    const soon = new Date(now.getTime() + 10 * 60 * 1000); // 10 minutes from now
+    const soon = new Date(now.getTime() + 10 * 60 * 1000);
     const endMin = now.toISOString();
     const endMax = soon.toISOString();
 
-    // Fetch markets ending in the next 10 minutes (imminent resolution)
     const urgentRes = await fetch(
       `https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=30&order=endDate&ascending=true&end_date_min=${endMin}&end_date_max=${endMax}`
     );
     const urgentMarkets = await urgentRes.json();
 
-    // Also fetch markets ending within 1 hour as backup
     const hourMax = new Date(now.getTime() + 60 * 60 * 1000).toISOString();
     const nearRes = await fetch(
       `https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=30&order=endDate&ascending=true&end_date_min=${endMin}&end_date_max=${hourMax}`
     );
     const nearMarkets = await nearRes.json();
 
+    // Build a lookup map of market question -> { conditionId, slug }
+    const marketsMap: Record<string, any> = {};
+
     const formatMarket = (m: any) => {
       const endDate = m.endDate || m.end_date_iso;
       const minsLeft = endDate ? Math.round((new Date(endDate).getTime() - now.getTime()) / 60000) : "?";
-      return `${m.question} | price: ${m.outcomePrices} | vol: $${Math.round(m.volumeNum || 0)} | liq: $${Math.round(m.liquidityNum || 0)} | ENDS IN: ${minsLeft} min`;
+      // Store market metadata for later bet saving
+      marketsMap[m.question] = {
+        conditionId: m.conditionId || m.condition_id || null,
+        slug: m.slug || null,
+        clobTokenIds: m.clobTokenIds || null,
+      };
+      return `${m.question} | conditionId: ${m.conditionId || "?"} | price: ${m.outcomePrices} | vol: $${Math.round(m.volumeNum || 0)} | liq: $${Math.round(m.liquidityNum || 0)} | ENDS IN: ${minsLeft} min`;
     };
 
     const urgentList = (Array.isArray(urgentMarkets) ? urgentMarkets : [])
@@ -49,10 +56,13 @@ async function fetchPolymarket(): Promise<string> {
       nearList ? `🕐 ENDING IN <1 HOUR:\n${nearList}` : "",
     ].filter(Boolean).join("\n\n");
 
-    return `POLYMARKET IMMINENT TRADES:\n${output || "No markets ending soon found. Falling back to high-liquidity."}`;
+    return {
+      text: `POLYMARKET IMMINENT TRADES:\n${output || "No markets ending soon found."}`,
+      marketsMap,
+    };
   } catch (e) {
     console.error("Polymarket fetch error:", e);
-    return "POLYMARKET: fetch error";
+    return { text: "POLYMARKET: fetch error", marketsMap: {} };
   }
 }
 
@@ -76,10 +86,13 @@ serve(async (req) => {
     const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
     if (!LOVABLE_API_KEY) throw new Error("LOVABLE_API_KEY not configured");
 
-    const [polyData, binanceData] = await Promise.all([
+    const [polyResult, binanceData] = await Promise.all([
       fetchPolymarket(),
       fetchBinanceVol(),
     ]);
+
+    const polyData = polyResult.text;
+    const marketsMap = polyResult.marketsMap;
 
     const modeNote = liveTrading
       ? `\n⚡ LIVE TRADING MODE: Your recommendations will be executed as REAL orders on Polymarket. Be conservative with sizing. Focus on markets with high liquidity and imminent resolution. Include token_id if available from the market data.`
@@ -166,19 +179,23 @@ ${systemPrompt}`;
       const supabaseKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
       const sb = createClient(supabaseUrl, supabaseKey);
 
-      const betsToInsert = (parsed.hypos || []).map((h: any) => ({
-        cycle: parsed.cycle,
-        market: h.market || "Unknown",
-        market_slug: h.market_slug || h.slug || null,
-        condition_id: h.condition_id || null,
-        token_id: h.token_id || h.tokenId || null,
-        side: h.action || h.side || "BUY",
-        recommended_price: h.price || h.entry_price || 0.5,
-        size: h.size || 0,
-        confidence: h.confidence || h.score || null,
-        is_live: liveTrading || false,
-        status: "pending",
-      }));
+      const betsToInsert = (parsed.hypos || []).map((h: any) => {
+        // Look up condition_id and slug from the real market data we fetched
+        const marketMeta = marketsMap[h.market] || {};
+        return {
+          cycle: parsed.cycle,
+          market: h.market || "Unknown",
+          market_slug: h.market_slug || h.slug || marketMeta.slug || null,
+          condition_id: h.condition_id || marketMeta.conditionId || null,
+          token_id: h.token_id || h.tokenId || null,
+          side: h.action || h.side || "BUY",
+          recommended_price: h.price || h.entry_price || 0.5,
+          size: h.size || 0,
+          confidence: h.confidence || h.score || null,
+          is_live: liveTrading || false,
+          status: "pending",
+        };
+      });
 
       if (betsToInsert.length > 0) {
         const { error: insertErr } = await sb.from("bets").insert(betsToInsert);
