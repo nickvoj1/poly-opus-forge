@@ -119,16 +119,14 @@ const Dashboard = () => {
   // due to Polymarket geoblock on datacenter IPs. Bets are tracked via DB and resolved against real outcomes.
   const executeTrade = useCallback(async (hypo: any) => {
     try {
-      addLog(`🔄 Verifying ${hypo.action} on ${hypo.market}...`);
+      addLog(`🔄 Executing ${hypo.action} on ${hypo.market}...`);
 
-      // Use clobTokenIds from run-cycle enrichment (preferred) or skip
       let tokenIds: string[] = hypo.clobTokenIds || [];
       if (tokenIds.length === 0) {
         addLog(`⚠ No token IDs for ${hypo.market}, tracking as paper trade`);
         return { status: 'signed', price: hypo.price || 0.5 };
       }
 
-      // Use first token (YES outcome) for BUY, second (NO) for SELL
       const tokenId = hypo.action === "BUY" ? tokenIds[0] : (tokenIds[1] || tokenIds[0]);
 
       // Get current midpoint price
@@ -143,9 +141,9 @@ const Dashboard = () => {
 
       addLog(`📊 ${hypo.market}: price=$${price.toFixed(4)}, size=${hypo.size}`);
 
-      // Sign the order to verify it's valid (EIP-712)
+      // Sign and attempt submission (via US proxy if configured)
       try {
-        const { data: signResult, error: signErr } = await supabase.functions.invoke("polymarket-trade", {
+        const { data: result, error: signErr } = await supabase.functions.invoke("polymarket-trade", {
           body: {
             action: "sign-order",
             tokenId,
@@ -156,23 +154,23 @@ const Dashboard = () => {
         });
 
         if (signErr) {
-          addLog(`⚠ Sign error (tracking anyway): ${signErr.message}`);
-        } else if (signResult?.submitted) {
-          addLog(`✅ Trade executed: ${hypo.action} ${hypo.size} @ $${signResult.finalPrice?.toFixed(4)}`);
-          return { status: 'filled', price: signResult.finalPrice, result: signResult.result };
-        } else if (signResult?.signedOrder) {
-          addLog(`📝 Order signed & verified (EIP-712). Tracking as paper trade @ $${signResult.finalPrice?.toFixed(4)}`);
-          return { status: 'signed', price: signResult.finalPrice || price };
-        } else if (signResult?.error) {
-          addLog(`⚠ Sign issue: ${signResult.error}`);
+          addLog(`⚠ Trade error: ${signErr.message}`);
+        } else if (result?.submitted) {
+          addLog(`✅ REAL TRADE EXECUTED via ${result.via || 'proxy'}: ${hypo.action} ${hypo.size} @ $${result.finalPrice?.toFixed(4)}`);
+          return { status: 'filled', price: result.finalPrice, result: result.result };
+        } else if (result?.signedOrder) {
+          addLog(`📝 Order signed (no proxy). Tracking as paper trade @ $${result.finalPrice?.toFixed(4)}`);
+          return { status: 'signed', price: result.finalPrice || price };
+        } else if (result?.error) {
+          addLog(`⚠ Trade error: ${result.error}`);
         }
-      } catch (signCatchErr: any) {
-        addLog(`⚠ Sign failed (tracking anyway): ${signCatchErr.message}`);
+      } catch (err: any) {
+        addLog(`⚠ Trade failed: ${err.message}`);
       }
 
       return { status: 'signed', price };
     } catch (e: any) {
-      addLog(`⚠ Trade verify error: ${e.message}. Tracking as paper trade.`);
+      addLog(`⚠ Trade error: ${e.message}. Tracking as paper trade.`);
       return { status: 'signed', price: hypo.price || 0.5 };
     }
   }, [addLog]);

@@ -219,7 +219,7 @@ async function getWalletBalance(walletAddress: string): Promise<{ usdc: number; 
 }
 
 // Sign and submit order using official ClobClient with full EIP-712 signing
-// Tries server-side submission first; if geoblocked (403), returns signed payload for client-side submission
+// Attempts submission via US proxy first, falls back to direct (which gets geoblocked)
 async function signAndSubmitOrder(
   walletPrivateKey: string,
   proxyAddress: string | undefined,
@@ -291,10 +291,57 @@ async function signAndSubmitOrder(
 
     console.log("Order signed successfully");
 
-    // Return signed order details for tracking
-    // Note: Server-side submission is geoblocked from EU datacenter (403)
-    // Orders are signed to verify validity, bets tracked via DB and resolved against real outcomes
-    console.log("Order signed & verified successfully");
+    // Try submitting via US proxy if configured
+    const US_PROXY_URL = Deno.env.get("US_PROXY_URL");
+    if (US_PROXY_URL) {
+      try {
+        console.log(`Submitting order via US proxy: ${US_PROXY_URL}`);
+        
+        // Build L2 HMAC headers for the order submission
+        const timestamp = Math.floor(Date.now() / 1000);
+        const orderBody = JSON.stringify(signedOrder);
+        const l2Headers = await getL2Headers(
+          creds.apiKey, creds.secret, creds.passphrase,
+          timestamp, "POST", "/order", orderBody, funderAddress?.toLowerCase()
+        );
+
+        const proxyRes = await fetch(`${US_PROXY_URL}/submit-order`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            order: signedOrder,
+            polyHeaders: {
+              ...l2Headers,
+              "Content-Type": "application/json",
+            },
+            targetUrl: `${CLOB_HOST}/order`,
+          }),
+        });
+
+        const proxyBody = await proxyRes.text();
+        console.log(`US proxy response [${proxyRes.status}]: ${proxyBody.substring(0, 300)}`);
+
+        if (proxyRes.ok) {
+          let result;
+          try { result = JSON.parse(proxyBody); } catch { result = proxyBody; }
+          console.log("Order submitted via US proxy successfully!");
+          return {
+            submitted: true,
+            result,
+            finalPrice,
+            tickSize,
+            via: "us-proxy",
+          };
+        } else {
+          console.error("US proxy submission failed, returning signed order");
+        }
+      } catch (proxyErr) {
+        console.error("US proxy error:", proxyErr);
+      }
+    }
+
+    // Fallback: return signed order for tracking only
+    console.log("Order signed & verified (no proxy available or proxy failed)");
     return {
       submitted: false,
       signedOrder,
