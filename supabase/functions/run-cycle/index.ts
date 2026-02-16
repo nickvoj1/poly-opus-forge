@@ -40,8 +40,8 @@ serve(async (req) => {
 
   try {
     const { cycle, bankroll, systemPrompt } = await req.json();
-    const ANTHROPIC_API_KEY = Deno.env.get("ANTHROPIC_API_KEY");
-    if (!ANTHROPIC_API_KEY) throw new Error("ANTHROPIC_API_KEY not configured");
+    const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
+    if (!LOVABLE_API_KEY) throw new Error("LOVABLE_API_KEY not configured");
 
     const [polyData, binanceData] = await Promise.all([
       fetchPolymarket(),
@@ -56,41 +56,54 @@ ${binanceData}
 
 ${systemPrompt}`;
 
-    const response = await fetch("https://api.anthropic.com/v1/messages", {
+    const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
       method: "POST",
       headers: {
-        "x-api-key": ANTHROPIC_API_KEY,
-        "content-type": "application/json",
-        "anthropic-version": "2023-06-01",
+        Authorization: `Bearer ${LOVABLE_API_KEY}`,
+        "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: "claude-opus-4-20250514",
-        max_tokens: 4000,
-        system: "You are a quantitative trading simulation engine. You MUST respond with valid JSON only. No markdown, no explanation, just pure JSON.",
-        messages: [{ role: "user", content: userMessage }],
+        model: "google/gemini-2.5-pro",
+        messages: [
+          {
+            role: "system",
+            content: "You are a quantitative trading simulation engine. You MUST respond with valid JSON only. No markdown, no explanation, no code blocks, just pure JSON object.",
+          },
+          { role: "user", content: userMessage },
+        ],
       }),
     });
 
     if (!response.ok) {
       const errText = await response.text();
-      console.error("Anthropic error:", response.status, errText);
-      return new Response(JSON.stringify({ error: `Claude API error: ${response.status}` }), {
-        status: 500,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      console.error("AI gateway error:", response.status, errText);
+
+      if (response.status === 429) {
+        return new Response(JSON.stringify({ error: "Rate limit exceeded. Please wait and try again." }), {
+          status: 429, headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      if (response.status === 402) {
+        return new Response(JSON.stringify({ error: "AI credits exhausted. Add credits in Settings → Workspace → Usage." }), {
+          status: 402, headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      return new Response(JSON.stringify({ error: `AI gateway error: ${response.status}` }), {
+        status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
     const result = await response.json();
-    const text = result.content?.[0]?.text || "{}";
+    const text = result.choices?.[0]?.message?.content || "{}";
 
-    // Parse the JSON from Claude's response
+    // Parse the JSON from the response
     let parsed;
     try {
-      // Try to extract JSON if wrapped in code blocks
       const jsonMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/) || [null, text];
       parsed = JSON.parse(jsonMatch[1].trim());
     } catch {
-      console.error("Failed to parse Claude response:", text);
+      console.error("Failed to parse AI response:", text.slice(0, 500));
       parsed = {
         cycle,
         bankroll: bankroll * (1 + (Math.random() - 0.45) * 0.05),
@@ -98,11 +111,10 @@ ${systemPrompt}`;
         mdd: Math.random() * 15,
         hypos: [],
         rules: ["Parse error - using fallback"],
-        log: "Claude response was not valid JSON. Raw: " + text.slice(0, 200),
+        log: "AI response was not valid JSON. Raw: " + text.slice(0, 200),
       };
     }
 
-    // Ensure required fields
     parsed.cycle = parsed.cycle || cycle;
     parsed.bankroll = parsed.bankroll || bankroll;
     parsed.sharpe = parsed.sharpe || 0;
