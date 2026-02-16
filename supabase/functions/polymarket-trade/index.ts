@@ -133,11 +133,12 @@ async function getBalanceAllowance(
 ): Promise<any> {
   const timestamp = Math.floor(Date.now() / 1000);
   const method = "GET";
-  const path = `/data/balance-allowance?asset_type=CONDITIONAL&token_id=${tokenId}`;
+  const signPath = `/balance-allowance`;
+  const queryParams = `asset_type=CONDITIONAL&token_id=${tokenId}`;
 
-  const headers = await getL2Headers(apiKey, secret, passphrase, timestamp, method, path, undefined, walletAddress);
+  const headers = await getL2Headers(apiKey, secret, passphrase, timestamp, method, signPath, undefined, walletAddress);
 
-  const res = await fetch(`${CLOB_HOST}${path}`, {
+  const res = await fetch(`${CLOB_HOST}${signPath}?${queryParams}`, {
     method,
     headers: {
       ...headers,
@@ -514,32 +515,24 @@ serve(async (req) => {
                 "POLY_TIMESTAMP": `${ts}`,
                 "POLY_NONCE": "0",
               };
-              // Try multiple signature_type values and address formats
-              let balanceFound = false;
-              const balAttempts = [
-                { path: `/balance-allowance?asset_type=COLLATERAL`, addr: clobAuthAddress, label: "no-sigtype-eoa" },
-                { path: `/balance-allowance?asset_type=COLLATERAL&signature_type=0`, addr: clobAuthAddress, label: "sigtype0-eoa" },
-                { path: `/balance-allowance?asset_type=COLLATERAL&signature_type=1`, addr: proxyAddress, label: "sigtype1-proxy" },
-                { path: `/balance-allowance?asset_type=COLLATERAL&signature_type=1`, addr: clobAuthAddress, label: "sigtype1-eoa" },
-              ];
-              for (const attempt of balAttempts) {
-                if (balanceFound) break;
-                const balTs = Math.floor(Date.now() / 1000);
-                const balHeaders = await getL2Headers(POLY_API_KEY!, POLY_SECRET!, POLY_PASSPHRASE!, balTs, "GET", attempt.path, undefined, attempt.addr);
-                const balRes = await fetch(`${CLOB_HOST}${attempt.path}`, {
-                  method: "GET",
-                  headers: { ...balHeaders, "Content-Type": "application/json" },
-                });
-                const balBody = await balRes.text();
-                console.log(`Balance attempt [${attempt.label}] [${balRes.status}]:`, balBody);
-                if (balRes.ok) {
-                  try {
-                    const data = JSON.parse(balBody);
-                    const rawBalance = parseFloat(data.balance || "0");
-                    polymarketUsdc = rawBalance > 1000 ? rawBalance / 1e6 : rawBalance;
-                    balanceFound = true;
-                  } catch {}
-                }
+              // IMPORTANT: HMAC is signed with JUST the path (no query params)
+              // Query params are added to the URL but NOT included in the signature
+              const signPath = `/balance-allowance`;
+              const balTs = Math.floor(Date.now() / 1000);
+              const balHeaders = await getL2Headers(POLY_API_KEY!, POLY_SECRET!, POLY_PASSPHRASE!, balTs, "GET", signPath, undefined, clobAuthAddress);
+              const queryParams = `asset_type=COLLATERAL&signature_type=1`;
+              const balRes = await fetch(`${CLOB_HOST}${signPath}?${queryParams}`, {
+                method: "GET",
+                headers: { ...balHeaders, "Content-Type": "application/json" },
+              });
+              const balBody = await balRes.text();
+              console.log(`Balance-allowance [${balRes.status}]:`, balBody);
+              if (balRes.ok) {
+                try {
+                  const data = JSON.parse(balBody);
+                  const rawBalance = parseFloat(data.balance || "0");
+                  polymarketUsdc = rawBalance > 1000 ? rawBalance / 1e6 : rawBalance;
+                } catch {}
               }
             }
           } catch (e) {
@@ -598,9 +591,10 @@ serve(async (req) => {
         if (POLY_API_KEY && POLY_SECRET && POLY_PASSPHRASE) {
           try {
             const timestamp = Math.floor(Date.now() / 1000);
-            const path = `/data/balance-allowance?asset_type=COLLATERAL`;
-            const headers = await getL2Headers(POLY_API_KEY, POLY_SECRET, POLY_PASSPHRASE, timestamp, "GET", path, undefined, clobAuthAddress);
-            const res = await fetch(`${CLOB_HOST}${path}`, {
+            const signPath = `/balance-allowance`;
+            const queryParams = `asset_type=COLLATERAL&signature_type=1`;
+            const headers = await getL2Headers(POLY_API_KEY, POLY_SECRET, POLY_PASSPHRASE, timestamp, "GET", signPath, undefined, clobAuthAddress);
+            const res = await fetch(`${CLOB_HOST}${signPath}?${queryParams}`, {
               method: "GET",
               headers: { ...headers, "Content-Type": "application/json" },
             });
