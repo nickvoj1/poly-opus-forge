@@ -84,16 +84,20 @@ interface BotState {
   reset: () => void;
 }
 
-const DEFAULT_PROMPT = `JSON output ONLY. Analyze Polymarket markets ending soon.
+const DEFAULT_PROMPT = `JSON output ONLY. Aggressive Kelly Criterion strategy.
 
-STRATEGY: For crypto Up/Down markets, use BTC 24h price change as primary signal.
-- BTC change NEGATIVE → SELL (bet NO/Down wins). This is statistically strongest.
-- BTC change POSITIVE → BUY (bet YES/Up wins).
-- ONLY trade when price gives good risk/reward (entry 0.30-0.55 range preferred).
-- Skip if no clear edge. Empty hypos is fine.
-- Max size: $1 per trade in live mode, 5% bankroll in sim.
+EDGE DETECTION: TRUE_prob - market_price > 20% required.
+- BTC 24h change: NEGATIVE → SELL/NO, POSITIVE → BUY/YES.
+- Volume spikes + liquidity shifts = secondary signals.
+- High-volume markets ONLY (>$10k volume or >$5k liquidity).
 
-JSON: {"cycle":N,"bankroll":X,"sharpe":Y,"mdd":Z,"hypos":[{"market":"exact market name","action":"BUY/SELL","size":N,"pnl":0,"price":0.5}],"rules":[".."],"log":".."}`;
+KELLY SIZING: f* = (p*b-q)/b → Aggressive 15% bankroll per trade.
+- Live: max $2.70/trade. Sim: 15% bankroll.
+- Target 5+ trades per cycle, 20+ trades/day.
+- Compound winners → 4 sessions/day → 250% daily target.
+- Max drawdown: 30%.
+
+JSON: {"cycle":N,"bankroll":X,"sharpe":Y,"mdd":Z,"hypos":[{"market":"exact name","action":"BUY/SELL","size":N,"pnl":0,"price":0.5,"edge":0.25,"kelly_f":0.15}],"rules":[".."],"log":".."}`;
 
 export const useBotStore = create<BotState>((set) => ({
   running: false,
