@@ -60,11 +60,11 @@ function getL2Headers(
 ) {
   return buildHmacSignature(secret, timestamp, method, requestPath, body).then(
     (sig) => ({
-      "POLY-ADDRESS": walletAddress || apiKey,
-      "POLY-SIGNATURE": sig,
-      "POLY-TIMESTAMP": `${timestamp}`,
-      "POLY-API-KEY": apiKey,
-      "POLY-PASSPHRASE": passphrase,
+      "POLY_ADDRESS": walletAddress || apiKey,
+      "POLY_SIGNATURE": sig,
+      "POLY_TIMESTAMP": `${timestamp}`,
+      "POLY_API_KEY": apiKey,
+      "POLY_PASSPHRASE": passphrase,
     })
   );
 }
@@ -382,8 +382,10 @@ serve(async (req) => {
       }
     }
 
-    // Use proxy address for CLOB API calls, EOA for on-chain queries
-    const walletAddress = POLY_PROXY_ADDRESS?.toLowerCase() || eoaAddress;
+    // Use EOA address for CLOB API L2 auth (must match address used to derive API keys)
+    // Use proxy address for on-chain balance queries and positions
+    const clobAuthAddress = eoaAddress;
+    const proxyAddress = POLY_PROXY_ADDRESS?.toLowerCase() || eoaAddress;
     const onChainAddress = eoaAddress;
 
     const { action, ...params } = await req.json();
@@ -424,28 +426,28 @@ serve(async (req) => {
       }
 
       case "get-positions": {
-        if (!walletAddress) {
+        if (!proxyAddress) {
           return new Response(
             JSON.stringify({ error: "Wallet private key not configured" }),
             { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
           );
         }
-        const positions = await getPositions(walletAddress);
+        const positions = await getPositions(proxyAddress);
         return new Response(JSON.stringify(positions), {
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
       }
 
       case "verify-connection": {
-        const connected = !!(POLY_API_KEY && POLY_SECRET && POLY_PASSPHRASE && walletAddress);
+        const connected = !!(POLY_API_KEY && POLY_SECRET && POLY_PASSPHRASE && clobAuthAddress);
         let verified = false;
         let balance = { usdc: 0, matic: 0 };
         let polymarketUsdc = 0;
         let verifyDebug: any = null;
         if (connected) {
           const [verifyResult, onChainBal] = await Promise.all([
-            verifyCredentials(POLY_API_KEY!, POLY_SECRET!, POLY_PASSPHRASE!, eoaAddress || walletAddress),
-            getWalletBalance(onChainAddress || walletAddress),
+            verifyCredentials(POLY_API_KEY!, POLY_SECRET!, POLY_PASSPHRASE!, clobAuthAddress),
+            getWalletBalance(onChainAddress || clobAuthAddress),
           ]);
           verified = verifyResult.ok;
           verifyDebug = { status: verifyResult.status, body: verifyResult.body };
@@ -455,7 +457,7 @@ serve(async (req) => {
           try {
             const timestamp = Math.floor(Date.now() / 1000);
             const path = `/data/balance-allowance?asset_type=COLLATERAL`;
-            const headers = await getL2Headers(POLY_API_KEY!, POLY_SECRET!, POLY_PASSPHRASE!, timestamp, "GET", path, undefined, walletAddress);
+            const headers = await getL2Headers(POLY_API_KEY!, POLY_SECRET!, POLY_PASSPHRASE!, timestamp, "GET", path, undefined, clobAuthAddress);
             const res = await fetch(`${CLOB_HOST}${path}`, {
               method: "GET",
               headers: { ...headers, "Content-Type": "application/json" },
@@ -469,7 +471,7 @@ serve(async (req) => {
         return new Response(JSON.stringify({ 
           connected, 
           verified, 
-          walletAddress: walletAddress || null,
+          walletAddress: proxyAddress || null,
           eoaAddress: eoaAddress || null,
           verifyDebug,
           balance: { usdc: balance.usdc + polymarketUsdc, matic: balance.matic, onChainUsdc: balance.usdc, polymarketUsdc },
@@ -479,14 +481,14 @@ serve(async (req) => {
       }
 
       case "get-wallet-balance": {
-        if (!walletAddress) {
+        if (!clobAuthAddress) {
           return new Response(
             JSON.stringify({ error: "Wallet not configured" }),
             { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
           );
         }
         // Get on-chain balance
-        const onChainBal = await getWalletBalance(onChainAddress || walletAddress);
+        const onChainBal = await getWalletBalance(onChainAddress || clobAuthAddress);
         
         // Also get Polymarket proxy wallet USDC balance via CLOB API
         let polymarketUsdc = 0;
@@ -494,14 +496,14 @@ serve(async (req) => {
           try {
             const timestamp = Math.floor(Date.now() / 1000);
             const path = `/data/balance-allowance?asset_type=COLLATERAL`;
-            const headers = await getL2Headers(POLY_API_KEY, POLY_SECRET, POLY_PASSPHRASE, timestamp, "GET", path, undefined, walletAddress);
+            const headers = await getL2Headers(POLY_API_KEY, POLY_SECRET, POLY_PASSPHRASE, timestamp, "GET", path, undefined, clobAuthAddress);
             const res = await fetch(`${CLOB_HOST}${path}`, {
               method: "GET",
               headers: { ...headers, "Content-Type": "application/json" },
             });
             if (res.ok) {
               const data = await res.json();
-              polymarketUsdc = parseFloat(data.balance || "0") / 1e6; // USDC has 6 decimals
+              polymarketUsdc = parseFloat(data.balance || "0") / 1e6;
             }
           } catch (e) {
             console.error("Error fetching Polymarket USDC balance:", e);
@@ -526,7 +528,7 @@ serve(async (req) => {
             { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
           );
         }
-        const orders = await getOpenOrders(POLY_API_KEY, POLY_SECRET, POLY_PASSPHRASE, walletAddress);
+        const orders = await getOpenOrders(POLY_API_KEY, POLY_SECRET, POLY_PASSPHRASE, clobAuthAddress);
         return new Response(JSON.stringify(orders), {
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
@@ -539,7 +541,7 @@ serve(async (req) => {
             { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
           );
         }
-        const trades = await getTradeHistory(POLY_API_KEY, POLY_SECRET, POLY_PASSPHRASE, walletAddress);
+        const trades = await getTradeHistory(POLY_API_KEY, POLY_SECRET, POLY_PASSPHRASE, clobAuthAddress);
         return new Response(JSON.stringify(trades), {
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
@@ -569,7 +571,7 @@ serve(async (req) => {
           side,
           size,
           price,
-          walletAddress
+          clobAuthAddress
         );
 
         return new Response(JSON.stringify(result), {
