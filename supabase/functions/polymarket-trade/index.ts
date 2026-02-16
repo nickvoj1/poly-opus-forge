@@ -386,7 +386,7 @@ serve(async (req) => {
     // Use proxy address for on-chain balance queries and positions
     const clobAuthAddress = eoaAddress;
     const proxyAddress = POLY_PROXY_ADDRESS?.toLowerCase() || eoaAddress;
-    const onChainAddress = eoaAddress;
+    const onChainAddress = proxyAddress;
 
     const { action, ...params } = await req.json();
 
