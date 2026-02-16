@@ -9,7 +9,7 @@ const corsHeaders = {
 
 const CLOB_HOST = "https://clob.polymarket.com";
 
-function getL2Headers(
+async function getL2Headers(
   apiKey: string,
   secret: string,
   passphrase: string,
@@ -19,15 +19,15 @@ function getL2Headers(
   body?: string,
   walletAddress?: string
 ) {
-  return buildPolyHmacSignature(secret, timestamp, method, requestPath, body).then(
-    (sig) => ({
-      "POLY_ADDRESS": walletAddress || apiKey,
-      "POLY_SIGNATURE": sig,
-      "POLY_TIMESTAMP": `${timestamp}`,
-      "POLY_API_KEY": apiKey,
-      "POLY_PASSPHRASE": passphrase,
-    })
-  );
+  const sig = await buildPolyHmacSignature(secret, timestamp, method, requestPath, body);
+  console.log("L2 HMAC debug:", JSON.stringify({ sig: sig?.substring(0, 20), sigType: typeof sig, secretLen: secret?.length, method, requestPath: requestPath?.substring(0, 40), apiKey: apiKey?.substring(0, 8), addr: walletAddress?.substring(0, 10) }));
+  return {
+    "POLY_ADDRESS": walletAddress || apiKey,
+    "POLY_SIGNATURE": sig,
+    "POLY_TIMESTAMP": `${timestamp}`,
+    "POLY_API_KEY": apiKey,
+    "POLY_PASSPHRASE": passphrase,
+  };
 }
 
 // Get current orderbook prices for a token
