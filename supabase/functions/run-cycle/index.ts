@@ -177,6 +177,18 @@ For the "price" field, use the actual market price from the data (parse outcomeP
     parsed.rules = parsed.rules || [];
     parsed.log = parsed.log || "Cycle complete";
 
+    // Enrich hypos with clobTokenIds from the real market data
+    for (const h of parsed.hypos) {
+      const meta = marketsMap[h.market];
+      if (meta?.clobTokenIds) {
+        try {
+          h.clobTokenIds = typeof meta.clobTokenIds === "string" ? JSON.parse(meta.clobTokenIds) : meta.clobTokenIds;
+        } catch {}
+      }
+      if (meta?.conditionId) h.condition_id = meta.conditionId;
+      if (meta?.slug) h.market_slug = meta.slug;
+    }
+
     // Save each recommended bet to the database for resolution tracking
     try {
       const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
