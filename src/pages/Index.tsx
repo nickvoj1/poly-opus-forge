@@ -119,24 +119,22 @@ const Dashboard = () => {
     try {
       addLog(`🔄 Executing ${hypo.action} on ${hypo.market}...`);
 
-      // For now, we search for the market to get token IDs
-      const { data: searchData } = await supabase.functions.invoke("polymarket-trade", {
-        body: { action: "search-markets", query: hypo.market },
-      });
-
-      const markets = searchData?.markets || [];
-      if (markets.length === 0) {
-        addLog(`❌ Market not found: ${hypo.market}`);
-        return { status: 'failed', error: 'Market not found' };
-      }
-
-      const market = markets[0];
-      // clobTokenIds is a JSON string array like '["tokenId1","tokenId2"]'
-      let tokenIds: string[] = [];
-      try {
-        tokenIds = JSON.parse(market.clobTokenIds || "[]");
-      } catch {
-        tokenIds = [];
+      // Use clobTokenIds from run-cycle enrichment (preferred) or fall back to search
+      let tokenIds: string[] = hypo.clobTokenIds || [];
+      if (tokenIds.length === 0) {
+        const { data: searchData } = await supabase.functions.invoke("polymarket-trade", {
+          body: { action: "search-markets", query: hypo.market },
+        });
+        const markets = searchData?.markets || [];
+        if (markets.length === 0) {
+          addLog(`❌ Market not found: ${hypo.market}`);
+          return { status: 'failed', error: 'Market not found' };
+        }
+        try {
+          tokenIds = JSON.parse(markets[0].clobTokenIds || "[]");
+        } catch {
+          tokenIds = [];
+        }
       }
 
       if (tokenIds.length === 0) {
