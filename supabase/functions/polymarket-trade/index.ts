@@ -591,7 +591,10 @@ serve(async (req) => {
           const { ethers } = await import("https://esm.sh/ethers@5.7.2");
           const pk = POLY_WALLET_KEY.startsWith("0x") ? POLY_WALLET_KEY : `0x${POLY_WALLET_KEY}`;
           const wallet = new ethers.Wallet(pk);
-          const address = wallet.address;
+          const eoaAddr = wallet.address;
+          const proxyAddr = POLY_PROXY_ADDRESS || eoaAddr;
+          const useProxy = params.useProxy ?? false;
+          const authAddress = useProxy ? proxyAddr : eoaAddr;
           const timestamp = Math.floor(Date.now() / 1000);
           const nonce = params.nonce ?? 0;
 
@@ -606,7 +609,7 @@ serve(async (req) => {
             ],
           };
           const value = {
-            address,
+            address: authAddress,
             timestamp: `${timestamp}`,
             nonce,
             message: "This message attests that I control the given wallet",
@@ -614,11 +617,13 @@ serve(async (req) => {
           const signature = await wallet._signTypedData(domain, types, value);
 
           const l1Headers = {
-            "POLY_ADDRESS": address,
+            "POLY_ADDRESS": authAddress,
             "POLY_SIGNATURE": signature,
             "POLY_TIMESTAMP": `${timestamp}`,
             "POLY_NONCE": `${nonce}`,
           };
+
+          console.log("derive-api-key using address:", authAddress, "useProxy:", useProxy);
 
           // Try derive first, then create if not found
           let res = await fetch(`${CLOB_HOST}/auth/derive-api-key`, {
@@ -650,7 +655,9 @@ serve(async (req) => {
           }
 
           return new Response(JSON.stringify({
-            walletAddress: address,
+            authAddress,
+            eoaAddress: eoaAddr,
+            proxyAddress: proxyAddr,
             apiKey: result.apiKey,
             secret: result.secret,
             passphrase: result.passphrase,
