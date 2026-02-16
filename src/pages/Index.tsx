@@ -61,20 +61,27 @@ const Dashboard = () => {
     }
   }, [setApiConnected, addLog, setPositions]);
 
-  // Fetch all bets from the database
+  // Fetch all bets from the database and compute real bankroll
   const fetchBets = useCallback(async () => {
     try {
       const { data, error } = await supabase
         .from("bets")
         .select("*")
         .order("created_at", { ascending: false })
-        .limit(100);
+        .limit(200);
       if (!error && data) {
         setBets(data as any);
-        const totalPnL = data
-          .filter((b: any) => b.pnl !== null)
-          .reduce((sum: number, b: any) => sum + Number(b.pnl), 0);
+        // Only count resolved (won/lost) bets for real P&L, not expired
+        const resolvedBets = data.filter((b: any) => b.pnl !== null && (b.status === 'won' || b.status === 'lost'));
+        const totalPnL = resolvedBets.reduce((sum: number, b: any) => sum + Number(b.pnl), 0);
         setRealPnL(totalPnL);
+        
+        // In sim mode, override bankroll = starting 100 + real P&L
+        const state = useBotStore.getState();
+        if (!state.liveTrading) {
+          const realBankroll = 100 + totalPnL;
+          useBotStore.setState({ bankroll: realBankroll });
+        }
       }
     } catch {}
   }, [setBets, setRealPnL]);
