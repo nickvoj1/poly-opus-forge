@@ -8,35 +8,54 @@ const corsHeaders = {
 };
 
 // Check if a Polymarket market has resolved and what the outcome was
-async function checkMarketResolution(marketSlug: string, marketQuestion: string): Promise<{
+async function checkMarketResolution(conditionId: string | null, marketSlug: string | null, marketQuestion: string): Promise<{
   resolved: boolean;
   outcome: string | null;
   endDate: string | null;
 }> {
-  // Try slug first, then search by question
   let markets: any[] = [];
 
-  if (marketSlug) {
+  // Priority 1: Use condition_id for exact lookup
+  if (conditionId) {
+    try {
+      const res = await fetch(
+        `https://gamma-api.polymarket.com/markets?condition_id=${encodeURIComponent(conditionId)}&limit=1`
+      );
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data) && data.length > 0) markets = data;
+      }
+    } catch {}
+  }
+
+  // Priority 2: Use slug
+  if (markets.length === 0 && marketSlug) {
     try {
       const res = await fetch(
         `https://gamma-api.polymarket.com/markets?slug=${encodeURIComponent(marketSlug)}&limit=1`
       );
-      if (res.ok) markets = await res.json();
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data) && data.length > 0) markets = data;
+      }
     } catch {}
   }
 
+  // Priority 3: Search by question (with strict matching)
   if (markets.length === 0 && marketQuestion) {
     try {
       const res = await fetch(
-        `https://gamma-api.polymarket.com/markets?limit=5&query=${encodeURIComponent(marketQuestion.slice(0, 80))}`
+        `https://gamma-api.polymarket.com/markets?limit=10&query=${encodeURIComponent(marketQuestion.slice(0, 80))}`
       );
       if (res.ok) {
         const results = await res.json();
-        // Find best match
-        markets = results.filter((m: any) =>
-          m.question?.toLowerCase().includes(marketQuestion.toLowerCase().slice(0, 30))
-        );
-        if (markets.length === 0) markets = results.slice(0, 1);
+        // Strict match: question must closely match
+        const questionLower = marketQuestion.toLowerCase();
+        markets = results.filter((m: any) => {
+          const q = (m.question || "").toLowerCase();
+          return q === questionLower || q.includes(questionLower) || questionLower.includes(q);
+        });
+        // Do NOT fall back to first result if no match — that causes wrong resolutions
       }
     } catch {}
   }
@@ -48,9 +67,7 @@ async function checkMarketResolution(marketSlug: string, marketQuestion: string)
   const market = markets[0];
 
   // Check if market is resolved
-  // Gamma API: closed=true and resolutionSource exist when resolved
   if (market.closed || market.resolved) {
-    // Determine outcome from outcomePrices — the winning outcome will be at 1.0
     let outcome: string | null = null;
     try {
       const prices = JSON.parse(market.outcomePrices || "[]");
@@ -63,12 +80,10 @@ async function checkMarketResolution(marketSlug: string, marketQuestion: string)
           break;
         }
       }
-      // If no clear winner found but market is closed, check if price is very low (< 0.05)
       if (!outcome) {
         for (let i = 0; i < prices.length; i++) {
           const p = parseFloat(prices[i]);
           if (p <= 0.05) {
-            // The OTHER outcome won
             const winnerIdx = i === 0 ? 1 : 0;
             outcome = outcomes[winnerIdx] || (winnerIdx === 0 ? "Yes" : "No");
             break;
@@ -137,7 +152,7 @@ serve(async (req) => {
     const results: any[] = [];
 
     for (const bet of pendingBets) {
-      const resolution = await checkMarketResolution(bet.market_slug || "", bet.market);
+      const resolution = await checkMarketResolution(bet.condition_id || null, bet.market_slug || null, bet.market);
 
       if (resolution.resolved && resolution.outcome) {
         const pnl = calculatePnL(bet.side, Number(bet.recommended_price), Number(bet.size), resolution.outcome);
