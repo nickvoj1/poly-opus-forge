@@ -1,5 +1,7 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { buildPolyHmacSignature } from "https://esm.sh/@polymarket/clob-client@5.2.3/dist/signing/hmac";
+import { ClobClient } from "https://esm.sh/@polymarket/clob-client@5.2.3";
+import { Side as ClobSide, OrderType } from "https://esm.sh/@polymarket/clob-client@5.2.3";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -216,59 +218,84 @@ async function getWalletBalance(walletAddress: string): Promise<{ usdc: number; 
   return { usdc: totalUsdc, matic };
 }
 
-// Note: This is a simplified version - real order signing requires EIP-712
-// For now, we use the CLOB's market order endpoint which handles matching
-async function placeOrder(
-  apiKey: string,
-  secret: string,
-  passphrase: string,
+// Place order using official ClobClient with full EIP-712 signing
+async function placeOrderViaClobClient(
+  walletPrivateKey: string,
+  proxyAddress: string | undefined,
   tokenId: string,
   side: "BUY" | "SELL",
   size: number,
   price: number,
-  walletAddress?: string
+  negRisk: boolean = false,
 ): Promise<any> {
-  const timestamp = Math.floor(Date.now() / 1000);
-  const method = "POST";
-  const path = "/order";
+  const { ethers } = await import("https://esm.sh/ethers@5.7.2");
+  const pk = walletPrivateKey.startsWith("0x") ? walletPrivateKey : `0x${walletPrivateKey}`;
+  const wallet = new ethers.Wallet(pk);
 
-  // Build the order payload
-  // The order needs to be signed with EIP-712 using the wallet private key
-  // This requires the full signing flow from @polymarket/order-utils
-  const orderPayload = {
-    order: {
-      tokenID: tokenId,
-      price: price,
-      size: size,
-      side: side,
-    },
-    owner: apiKey,
-    orderType: "FOK", // Fill or Kill for market-like orders
-  };
+  // Determine signature type: POLY_PROXY (1) if proxy wallet, EOA (0) otherwise
+  const sigType = proxyAddress ? 1 : 0;
+  const funderAddress = proxyAddress || wallet.address;
 
-  const bodyStr = JSON.stringify(orderPayload);
-  const headers = await getL2Headers(apiKey, secret, passphrase, timestamp, method, path, bodyStr, walletAddress);
+  console.log(`Creating ClobClient: sigType=${sigType}, funder=${funderAddress?.substring(0, 10)}, eoa=${wallet.address.substring(0, 10)}`);
 
-  const res = await fetch(`${CLOB_HOST}${path}`, {
-    method,
-    headers: {
-      ...headers,
-      "Content-Type": "application/json",
-    },
-    body: bodyStr,
-  });
+  // Initialize ClobClient with L1 auth (private key) - it will derive L2 creds internally
+  const client = new ClobClient(
+    "https://clob.polymarket.com",
+    137, // Polygon mainnet
+    wallet, // ethers v5 Wallet as signer
+    undefined, // creds - let client derive them via L1 auth
+    sigType, // signature type
+    funderAddress, // funder address for proxy wallets
+  );
 
-  const responseText = await res.text();
-  console.log(`Order response [${res.status}]:`, responseText);
-
-  if (!res.ok) {
-    return { error: responseText, status: res.status };
-  }
-
+  // Derive API credentials via L1 auth
   try {
-    return JSON.parse(responseText);
-  } catch {
-    return { result: responseText };
+    const creds = await client.deriveApiKey();
+    console.log("Derived API creds for trading:", creds.apiKey?.substring(0, 8));
+    // Re-init client with derived creds for order placement
+    const authedClient = new ClobClient(
+      "https://clob.polymarket.com",
+      137,
+      wallet,
+      { key: creds.apiKey, secret: creds.secret, passphrase: creds.passphrase },
+      sigType,
+      funderAddress,
+    );
+
+    // Determine tick size from the orderbook
+    let tickSize = "0.01";
+    try {
+      const book = await getOrderbook(tokenId);
+      if (book?.market?.minimum_tick_size) {
+        tickSize = book.market.minimum_tick_size;
+      }
+    } catch {}
+
+    // Round price to valid tick
+    const tick = parseFloat(tickSize);
+    const roundedPrice = Math.round(price / tick) * tick;
+    const finalPrice = Math.max(tick, Math.min(1 - tick, roundedPrice));
+
+    console.log(`Placing order: token=${tokenId.substring(0, 20)}..., side=${side}, size=${size}, price=${finalPrice}, tick=${tickSize}, negRisk=${negRisk}`);
+
+    const clobSide = side === "BUY" ? ClobSide.BUY : ClobSide.SELL;
+    
+    const response = await authedClient.createAndPostOrder({
+      tokenID: tokenId,
+      price: finalPrice,
+      size: size,
+      side: clobSide,
+      orderType: OrderType.FOK, // Fill-or-Kill for immediate execution
+    }, {
+      tickSize,
+      negRisk,
+    });
+
+    console.log("Order response:", JSON.stringify(response));
+    return response;
+  } catch (e) {
+    console.error("ClobClient order error:", e);
+    return { error: e instanceof Error ? e.message : String(e) };
   }
 }
 
@@ -648,14 +675,14 @@ serve(async (req) => {
       }
 
       case "place-trade": {
-        if (!POLY_API_KEY || !POLY_SECRET || !POLY_PASSPHRASE) {
+        if (!POLY_WALLET_KEY) {
           return new Response(
-            JSON.stringify({ error: "Polymarket API credentials not configured" }),
+            JSON.stringify({ error: "Wallet private key not configured for trading" }),
             { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
           );
         }
 
-        const { tokenId, side, size, price } = params;
+        const { tokenId, side, size, price, negRisk } = params;
         if (!tokenId || !side || !size || !price) {
           return new Response(
             JSON.stringify({ error: "Missing required fields: tokenId, side, size, price" }),
@@ -663,15 +690,14 @@ serve(async (req) => {
           );
         }
 
-        const result = await placeOrder(
-          POLY_API_KEY,
-          POLY_SECRET,
-          POLY_PASSPHRASE,
+        const result = await placeOrderViaClobClient(
+          POLY_WALLET_KEY,
+          POLY_PROXY_ADDRESS || undefined,
           tokenId,
           side,
           size,
           price,
-          clobAuthAddress
+          negRisk || false,
         );
 
         return new Response(JSON.stringify(result), {
