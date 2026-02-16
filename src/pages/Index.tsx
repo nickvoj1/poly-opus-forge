@@ -79,13 +79,29 @@ const Dashboard = () => {
     } catch {}
   }, [setBets, setRealPnL]);
 
-  // Check resolutions for pending bets
+  // Check resolutions for pending bets and update bankroll with real P&L
   const checkResolutions = useCallback(async () => {
     try {
       const { data, error } = await supabase.functions.invoke("check-resolutions");
       if (!error && data?.resolved > 0) {
+        // Calculate the P&L delta from newly resolved bets
+        const cyclePnL = data.results.reduce((sum: number, r: any) => sum + (r.pnl || 0), 0);
+        
         addLog(`🎯 Resolved ${data.resolved} bets: ${data.results.map((r: any) => `${r.market} → ${r.status} ($${r.pnl?.toFixed(2)})`).join(", ")}`);
-        toast.success(`${data.resolved} bet(s) resolved!`);
+        addLog(`💰 Resolution P&L: $${cyclePnL.toFixed(2)}`);
+        
+        if (cyclePnL !== 0) {
+          // Update bankroll with real resolution results
+          const state = useBotStore.getState();
+          const newBankroll = state.bankroll + cyclePnL;
+          useBotStore.setState({
+            bankroll: newBankroll,
+            pnlHistory: [...state.pnlHistory, { cycle: state.cycle, bankroll: newBankroll }],
+          });
+          addLog(`📊 Bankroll adjusted: $${state.bankroll.toFixed(2)} → $${newBankroll.toFixed(2)}`);
+        }
+
+        toast.success(`${data.resolved} bet(s) resolved! P&L: $${cyclePnL.toFixed(2)}`);
         await fetchBets();
       }
     } catch {}
