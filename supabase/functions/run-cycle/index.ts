@@ -117,7 +117,11 @@ ${systemPrompt}`;
         messages: [
           {
             role: "system",
-            content: "You are a quantitative trading simulation engine. You MUST respond with valid JSON only. No markdown, no explanation, no code blocks, just pure JSON object.",
+            content: `You are a quantitative trading simulation engine. You MUST respond with valid JSON only. No markdown, no explanation, no code blocks, just pure JSON object.
+
+CRITICAL: In the "market" field of each hypo, use the EXACT human-readable market question (e.g. "Bitcoin Up or Down - February 16, 7:00AM-7:05AM ET"). Do NOT put conditionId hashes in the market field. The conditionId is metadata only — never use it as the market name.
+
+For the "price" field, use the actual market price from the data (parse outcomePrices). Do NOT default to 0.5 unless the price truly is 0.50.`,
           },
           { role: "user", content: userMessage },
         ],
