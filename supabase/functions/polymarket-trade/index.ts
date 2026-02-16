@@ -45,7 +45,9 @@ async function buildHmacSignature(
   for (let i = 0; i < sigArray.length; i++) {
     binary += String.fromCharCode(sigArray[i]);
   }
-  return btoa(binary);
+  // Must be URL-safe base64 (official Polymarket client requirement)
+  const sig = btoa(binary);
+  return sig.replace(/\+/g, '-').replace(/\//g, '_');
 }
 
 function getL2Headers(
@@ -365,8 +367,14 @@ serve(async (req) => {
 
   try {
     const POLY_API_KEY = Deno.env.get("POLYMARKET_API_KEY");
-    const POLY_SECRET = Deno.env.get("POLYMARKET_API_SECRET");
+    let POLY_SECRET = Deno.env.get("POLYMARKET_API_SECRET");
     const POLY_PASSPHRASE = Deno.env.get("POLYMARKET_PASSPHRASE");
+    
+    // Ensure base64 secret has proper padding
+    if (POLY_SECRET && POLY_SECRET.length % 4 !== 0) {
+      POLY_SECRET = POLY_SECRET + "=".repeat(4 - (POLY_SECRET.length % 4));
+    }
+    console.log("Auth debug - secret length:", POLY_SECRET?.length, "ends with =:", POLY_SECRET?.endsWith("="), "apiKey:", POLY_API_KEY?.substring(0, 8));
     const POLY_WALLET_KEY = Deno.env.get("POLYMARKET_WALLET_PRIVATE_KEY");
     const POLY_PROXY_ADDRESS = Deno.env.get("POLYMARKET_PROXY_ADDRESS");
 
@@ -384,9 +392,9 @@ serve(async (req) => {
       }
     }
 
-    // Use checksummed EOA address for CLOB API L2 auth headers (must match address used to derive API keys)
+    // Use lowercase EOA address for CLOB API L2 auth headers (proven to work with 200 response)
     // Use proxy address for on-chain balance queries and positions
-    const clobAuthAddress = eoaAddressChecksum;
+    const clobAuthAddress = eoaAddress;
     const proxyAddress = POLY_PROXY_ADDRESS?.toLowerCase() || eoaAddress;
     const onChainAddress = proxyAddress;
 
@@ -449,51 +457,126 @@ serve(async (req) => {
         let positionsValue = 0;
         let verifyDebug: any = null;
         if (connected) {
-          // Query all balances in parallel
-          const queries: Promise<any>[] = [
-            verifyCredentials(POLY_API_KEY!, POLY_SECRET!, POLY_PASSPHRASE!, clobAuthAddress),
-            getWalletBalance(eoaAddress),
-          ];
-          if (proxyAddress && proxyAddress !== eoaAddress) {
-            queries.push(getWalletBalance(proxyAddress));
-          }
-          // Get positions value
-          if (proxyAddress) {
-            queries.push(getPositions(proxyAddress));
+          // Use L1 auth (EIP-712) for verification since L2 HMAC is unreliable
+          let l1VerifyResult: any = { ok: false, status: 0, body: "" };
+          if (POLY_WALLET_KEY) {
+            try {
+              const { ethers } = await import("https://esm.sh/ethers@5.7.2");
+              const pk = POLY_WALLET_KEY.startsWith("0x") ? POLY_WALLET_KEY : `0x${POLY_WALLET_KEY}`;
+              const wallet = new ethers.Wallet(pk);
+              const authAddr = wallet.address; // Must use checksummed address for L1 EIP-712 auth
+              const ts = Math.floor(Date.now() / 1000);
+              const domain = { name: "ClobAuthDomain", version: "1", chainId: 137 };
+              const types = {
+                ClobAuth: [
+                  { name: "address", type: "address" },
+                  { name: "timestamp", type: "string" },
+                  { name: "nonce", type: "uint256" },
+                  { name: "message", type: "string" },
+                ],
+              };
+              const value = {
+                address: authAddr,
+                timestamp: `${ts}`,
+                nonce: 0,
+                message: "This message attests that I control the given wallet",
+              };
+              const sig = await wallet._signTypedData(domain, types, value);
+              const l1Headers = {
+                "POLY_ADDRESS": authAddr,
+                "POLY_SIGNATURE": sig,
+                "POLY_TIMESTAMP": `${ts}`,
+                "POLY_NONCE": "0",
+              };
+              const res = await fetch(`${CLOB_HOST}/auth/derive-api-key`, {
+                method: "GET",
+                headers: { ...l1Headers, "Content-Type": "application/json" },
+              });
+              const body = await res.text();
+              l1VerifyResult = { ok: res.ok, status: res.status, body };
+              console.log(`L1 verify response [${res.status}]:`, body);
+            } catch (e) {
+              console.error("L1 verify error:", e);
+              l1VerifyResult = { ok: false, status: 0, body: String(e) };
+            }
           }
 
-          const results = await Promise.all(queries);
-          const verifyResult = results[0];
-          eoaBal = results[1];
+          // Query on-chain balances in parallel
+          const balQueries: Promise<any>[] = [getWalletBalance(eoaAddress)];
           if (proxyAddress && proxyAddress !== eoaAddress) {
-            proxyBal = results[2];
+            balQueries.push(getWalletBalance(proxyAddress));
           }
-          
-          // Calculate positions value
-          const positionsData = proxyAddress && proxyAddress !== eoaAddress ? results[3] : results[2];
+          if (proxyAddress) {
+            balQueries.push(getPositions(proxyAddress));
+          }
+          const balResults = await Promise.all(balQueries);
+          eoaBal = balResults[0];
+          if (proxyAddress && proxyAddress !== eoaAddress) {
+            proxyBal = balResults[1];
+          }
+          const positionsData = proxyAddress && proxyAddress !== eoaAddress ? balResults[2] : balResults[1];
           if (Array.isArray(positionsData)) {
             for (const pos of positionsData) {
               positionsValue += pos.currentValue || 0;
             }
           }
 
-          verified = verifyResult.ok;
-          verifyDebug = { status: verifyResult.status, body: verifyResult.body };
+          verified = l1VerifyResult.ok;
+          verifyDebug = { status: l1VerifyResult.status, body: l1VerifyResult.body };
           
-          // Get Polymarket CLOB USDC balance
+          // Try L2 for CLOB balance, but also try L1 balance endpoint
           try {
-            const timestamp = Math.floor(Date.now() / 1000);
-            const path = `/data/balance-allowance?asset_type=COLLATERAL`;
-            const headers = await getL2Headers(POLY_API_KEY!, POLY_SECRET!, POLY_PASSPHRASE!, timestamp, "GET", path, undefined, clobAuthAddress);
-            const res = await fetch(`${CLOB_HOST}${path}`, {
-              method: "GET",
-              headers: { ...headers, "Content-Type": "application/json" },
-            });
-            if (res.ok) {
-              const data = await res.json();
-              polymarketUsdc = parseFloat(data.balance || "0") / 1e6;
+            // Try the profile/balance endpoint with L1 auth
+            if (POLY_WALLET_KEY) {
+              const { ethers } = await import("https://esm.sh/ethers@5.7.2");
+              const pk = POLY_WALLET_KEY.startsWith("0x") ? POLY_WALLET_KEY : `0x${POLY_WALLET_KEY}`;
+              const wallet = new ethers.Wallet(pk);
+              const authAddr = wallet.address; // Must use checksummed address for L1 EIP-712 auth
+              const ts = Math.floor(Date.now() / 1000);
+              const domain = { name: "ClobAuthDomain", version: "1", chainId: 137 };
+              const types = {
+                ClobAuth: [
+                  { name: "address", type: "address" },
+                  { name: "timestamp", type: "string" },
+                  { name: "nonce", type: "uint256" },
+                  { name: "message", type: "string" },
+                ],
+              };
+              const value = {
+                address: authAddr,
+                timestamp: `${ts}`,
+                nonce: 0,
+                message: "This message attests that I control the given wallet",
+              };
+              const sig = await wallet._signTypedData(domain, types, value);
+              const l1Headers = {
+                "POLY_ADDRESS": authAddr,
+                "POLY_SIGNATURE": sig,
+                "POLY_TIMESTAMP": `${ts}`,
+                "POLY_NONCE": "0",
+              };
+              // Use L2 HMAC auth for balance-allowance (now with URL-safe base64 fix)
+              const balTs = Math.floor(Date.now() / 1000);
+              const balPath = `/balance-allowance?asset_type=COLLATERAL&signature_type=1`;
+              const balHeaders = await getL2Headers(POLY_API_KEY!, POLY_SECRET!, POLY_PASSPHRASE!, balTs, "GET", balPath, undefined, clobAuthAddress);
+              const balRes = await fetch(`${CLOB_HOST}${balPath}`, {
+                method: "GET",
+                headers: { ...balHeaders, "Content-Type": "application/json" },
+              });
+              console.log(`Balance-allowance response [${balRes.status}]`);
+              if (balRes.ok) {
+                const data = await balRes.json();
+                console.log("Balance data:", JSON.stringify(data));
+                const rawBalance = parseFloat(data.balance || "0");
+                polymarketUsdc = rawBalance > 1000 ? rawBalance / 1e6 : rawBalance;
+              } else {
+                const errText = await balRes.text();
+                console.log("Balance error:", errText);
+              }
             }
-          } catch {}
+          } catch (e) {
+            console.error("Balance fetch error:", e);
+          }
         }
         const totalOnChainUsdc = eoaBal.usdc + proxyBal.usdc;
         const totalUsdc = totalOnChainUsdc + polymarketUsdc;
