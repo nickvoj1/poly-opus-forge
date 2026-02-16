@@ -1,4 +1,5 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -158,6 +159,38 @@ ${systemPrompt}`;
     parsed.hypos = parsed.hypos || [];
     parsed.rules = parsed.rules || [];
     parsed.log = parsed.log || "Cycle complete";
+
+    // Save each recommended bet to the database for resolution tracking
+    try {
+      const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
+      const supabaseKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+      const sb = createClient(supabaseUrl, supabaseKey);
+
+      const betsToInsert = (parsed.hypos || []).map((h: any) => ({
+        cycle: parsed.cycle,
+        market: h.market || "Unknown",
+        market_slug: h.market_slug || h.slug || null,
+        condition_id: h.condition_id || null,
+        token_id: h.token_id || h.tokenId || null,
+        side: h.action || h.side || "BUY",
+        recommended_price: h.price || h.entry_price || 0.5,
+        size: h.size || 0,
+        confidence: h.confidence || h.score || null,
+        is_live: liveTrading || false,
+        status: "pending",
+      }));
+
+      if (betsToInsert.length > 0) {
+        const { error: insertErr } = await sb.from("bets").insert(betsToInsert);
+        if (insertErr) {
+          console.error("Failed to save bets:", insertErr);
+        } else {
+          console.log(`Saved ${betsToInsert.length} bets for cycle ${parsed.cycle}`);
+        }
+      }
+    } catch (e) {
+      console.error("Error saving bets:", e);
+    }
 
     return new Response(JSON.stringify(parsed), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },

@@ -14,7 +14,63 @@ export type Database = {
   }
   public: {
     Tables: {
-      [_ in never]: never
+      bets: {
+        Row: {
+          condition_id: string | null
+          confidence: number | null
+          created_at: string
+          cycle: number
+          id: string
+          is_live: boolean
+          market: string
+          market_slug: string | null
+          pnl: number | null
+          recommended_price: number
+          resolution: string | null
+          resolved_at: string | null
+          side: string
+          size: number
+          status: string
+          token_id: string | null
+        }
+        Insert: {
+          condition_id?: string | null
+          confidence?: number | null
+          created_at?: string
+          cycle: number
+          id?: string
+          is_live?: boolean
+          market: string
+          market_slug?: string | null
+          pnl?: number | null
+          recommended_price: number
+          resolution?: string | null
+          resolved_at?: string | null
+          side: string
+          size?: number
+          status?: string
+          token_id?: string | null
+        }
+        Update: {
+          condition_id?: string | null
+          confidence?: number | null
+          created_at?: string
+          cycle?: number
+          id?: string
+          is_live?: boolean
+          market?: string
+          market_slug?: string | null
+          pnl?: number | null
+          recommended_price?: number
+          resolution?: string | null
+          resolved_at?: string | null
+          side?: string
+          size?: number
+          status?: string
+          token_id?: string | null
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never
