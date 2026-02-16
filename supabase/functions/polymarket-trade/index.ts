@@ -180,7 +180,68 @@ async function getBalanceAllowance(
   return await res.json();
 }
 
-// Place a market order via CLOB API
+// Get wallet USDC balance on Polygon via public RPC
+async function getWalletBalance(walletAddress: string): Promise<{ usdc: number; matic: number }> {
+  const POLYGON_RPC = "https://polygon-rpc.com";
+  // USDC on Polygon: 0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174 (PoS bridged)
+  // USDC.e / native USDC: 0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359
+  const USDC_ADDRESSES = [
+    "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174", // USDC.e (6 decimals)
+    "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359", // native USDC (6 decimals)
+  ];
+
+  let totalUsdc = 0;
+
+  for (const usdcAddr of USDC_ADDRESSES) {
+    try {
+      // ERC20 balanceOf(address) selector: 0x70a08231
+      const paddedAddr = walletAddress.replace("0x", "").padStart(64, "0");
+      const res = await fetch(POLYGON_RPC, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          method: "eth_call",
+          params: [{
+            to: usdcAddr,
+            data: `0x70a08231000000000000000000000000${paddedAddr}`,
+          }, "latest"],
+          id: 1,
+        }),
+      });
+      const data = await res.json();
+      if (data.result && data.result !== "0x") {
+        totalUsdc += parseInt(data.result, 16) / 1e6; // USDC has 6 decimals
+      }
+    } catch (e) {
+      console.error(`Error fetching USDC balance from ${usdcAddr}:`, e);
+    }
+  }
+
+  // Get MATIC balance
+  let matic = 0;
+  try {
+    const res = await fetch(POLYGON_RPC, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        method: "eth_getBalance",
+        params: [walletAddress, "latest"],
+        id: 2,
+      }),
+    });
+    const data = await res.json();
+    if (data.result) {
+      matic = parseInt(data.result, 16) / 1e18;
+    }
+  } catch (e) {
+    console.error("Error fetching MATIC balance:", e);
+  }
+
+  return { usdc: totalUsdc, matic };
+}
+
 // Note: This is a simplified version - real order signing requires EIP-712
 // For now, we use the CLOB's market order endpoint which handles matching
 async function placeOrder(
@@ -361,14 +422,32 @@ serve(async (req) => {
       case "verify-connection": {
         const connected = !!(POLY_API_KEY && POLY_SECRET && POLY_PASSPHRASE && walletAddress);
         let verified = false;
+        let balance = { usdc: 0, matic: 0 };
         if (connected) {
-          verified = await verifyCredentials(POLY_API_KEY!, POLY_SECRET!, POLY_PASSPHRASE!);
+          [verified, balance] = await Promise.all([
+            verifyCredentials(POLY_API_KEY!, POLY_SECRET!, POLY_PASSPHRASE!),
+            getWalletBalance(walletAddress),
+          ]);
         }
         return new Response(JSON.stringify({ 
           connected, 
           verified, 
           walletAddress: walletAddress || null,
+          balance,
         }), {
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      case "get-wallet-balance": {
+        if (!walletAddress) {
+          return new Response(
+            JSON.stringify({ error: "Wallet not configured" }),
+            { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+          );
+        }
+        const bal = await getWalletBalance(walletAddress);
+        return new Response(JSON.stringify(bal), {
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
       }

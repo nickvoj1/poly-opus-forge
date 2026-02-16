@@ -1,4 +1,4 @@
-import { useCallback, useRef, useEffect } from "react";
+import { useCallback, useRef, useEffect, useState } from "react";
 import { Play, Square, RotateCcw, DollarSign, TrendingUp, BarChart3, AlertTriangle, Wifi, WifiOff, Zap } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { StatCard } from "@/components/StatCard";
@@ -17,6 +17,7 @@ const Dashboard = () => {
     liveTrading, setLiveTrading, positions, setPositions, apiConnected, setApiConnected,
   } = useBotStore();
   const abortRef = useRef<AbortController | null>(null);
+  const [walletBalance, setWalletBalance] = useState<{ usdc: number; matic: number } | null>(null);
 
   // Check API connection on mount
   useEffect(() => {
@@ -33,7 +34,10 @@ const Dashboard = () => {
         addLog("⚠ Polymarket API: not connected or invalid credentials");
       } else {
         setApiConnected(true);
-        addLog(`✓ Polymarket API: connected (wallet: ${data.walletAddress?.slice(0, 8)}...)`);
+        if (data.balance) {
+          setWalletBalance(data.balance);
+        }
+        addLog(`✓ Polymarket API: connected (wallet: ${data.walletAddress?.slice(0, 8)}... | USDC: $${data.balance?.usdc?.toFixed(2) || '0.00'})`);
         // Fetch positions
         const { data: posData } = await supabase.functions.invoke("polymarket-trade", {
           body: { action: "get-positions" },
@@ -123,13 +127,31 @@ const Dashboard = () => {
 
   const runCycle = useCallback(async () => {
     const state = useBotStore.getState();
+
+    // In live mode, fetch real wallet balance to use as bankroll
+    let currentBankroll = state.bankroll;
+    if (state.liveTrading) {
+      try {
+        const { data: balData } = await supabase.functions.invoke("polymarket-trade", {
+          body: { action: "get-wallet-balance" },
+        });
+        if (balData && typeof balData.usdc === "number") {
+          currentBankroll = balData.usdc;
+          setWalletBalance(balData);
+          addLog(`💰 Wallet balance: $${balData.usdc.toFixed(2)} USDC, ${balData.matic.toFixed(4)} MATIC`);
+        }
+      } catch {
+        addLog("⚠ Could not fetch wallet balance, using last known");
+      }
+    }
+
     addLog(`Starting cycle ${state.cycle + 1}${state.liveTrading ? " [LIVE]" : " [SIM]"}...`);
 
     try {
       const { data, error } = await supabase.functions.invoke("run-cycle", {
         body: {
           cycle: state.cycle + 1,
-          bankroll: state.bankroll,
+          bankroll: currentBankroll,
           systemPrompt: state.systemPrompt,
           liveTrading: state.liveTrading,
         },
@@ -162,11 +184,24 @@ const Dashboard = () => {
         }
       }
 
+      // In live mode, override bankroll with real wallet balance after trades
+      if (state.liveTrading) {
+        try {
+          const { data: postBal } = await supabase.functions.invoke("polymarket-trade", {
+            body: { action: "get-wallet-balance" },
+          });
+          if (postBal && typeof postBal.usdc === "number") {
+            data.bankroll = postBal.usdc;
+            setWalletBalance(postBal);
+          }
+        } catch { /* use AI-reported bankroll */ }
+      }
+
       addCycleResult({ ...data, trades });
-      addLog(`Cycle ${data.cycle} complete. Bankroll: $${data.bankroll.toFixed(2)}`);
+      addLog(`Cycle ${data.cycle} complete. Bankroll: $${data.bankroll.toFixed(2)}${state.liveTrading ? " (real)" : ""}`);
 
       // Refresh positions after trades
-      if (state.liveTrading && trades.length > 0) {
+      if (state.liveTrading) {
         await checkApiConnection();
       }
 
@@ -287,7 +322,13 @@ const Dashboard = () => {
 
       {/* Stat cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <StatCard label="Bankroll" value={bankroll} prefix="$" icon={<DollarSign size={16} />} variant={bankroll >= 100 ? "positive" : "negative"} />
+        <StatCard 
+          label={liveTrading ? "Wallet (USDC)" : "Bankroll"} 
+          value={liveTrading && walletBalance ? walletBalance.usdc : bankroll} 
+          prefix="$" 
+          icon={<DollarSign size={16} />} 
+          variant={(liveTrading && walletBalance ? walletBalance.usdc : bankroll) >= 100 ? "positive" : "negative"} 
+        />
         <StatCard label="Sharpe" value={sharpe} icon={<TrendingUp size={16} />} variant={sharpe > 0 ? "positive" : "default"} />
         <StatCard label="Cycles" value={cycle} icon={<BarChart3 size={16} />} />
         <StatCard label="Max DD" value={mdd} suffix="%" icon={<AlertTriangle size={16} />} variant={mdd > 10 ? "negative" : "default"} />
