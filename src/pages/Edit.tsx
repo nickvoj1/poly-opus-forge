@@ -37,7 +37,7 @@ const Edit = () => {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-xl font-bold font-mono text-primary glow-text">PROMPT EDITOR</h1>
-          <p className="text-muted-foreground text-xs font-mono">Edit the Claude system prompt for cycle execution</p>
+          <p className="text-muted-foreground text-xs font-mono">Edit the AI system prompt for cycle execution</p>
         </div>
         <div className="flex items-center gap-2">
           <Button onClick={regenerate} variant="outline" className="gap-2 font-mono text-xs">
