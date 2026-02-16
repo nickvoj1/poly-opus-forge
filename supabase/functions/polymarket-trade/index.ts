@@ -218,8 +218,9 @@ async function getWalletBalance(walletAddress: string): Promise<{ usdc: number; 
   return { usdc: totalUsdc, matic };
 }
 
-// Place order using official ClobClient with full EIP-712 signing
-async function placeOrderViaClobClient(
+// Sign order using official ClobClient with full EIP-712 signing
+// Returns the signed order payload for client-side submission (bypasses geoblock)
+async function signOrder(
   walletPrivateKey: string,
   proxyAddress: string | undefined,
   tokenId: string,
@@ -232,27 +233,24 @@ async function placeOrderViaClobClient(
   const pk = walletPrivateKey.startsWith("0x") ? walletPrivateKey : `0x${walletPrivateKey}`;
   const wallet = new ethers.Wallet(pk);
 
-  // Determine signature type: POLY_PROXY (1) if proxy wallet, EOA (0) otherwise
   const sigType = proxyAddress ? 1 : 0;
   const funderAddress = proxyAddress || wallet.address;
 
-  console.log(`Creating ClobClient: sigType=${sigType}, funder=${funderAddress?.substring(0, 10)}, eoa=${wallet.address.substring(0, 10)}`);
+  console.log(`Signing order: sigType=${sigType}, funder=${funderAddress?.substring(0, 10)}`);
 
-  // Initialize ClobClient with L1 auth (private key) - it will derive L2 creds internally
   const client = new ClobClient(
     "https://clob.polymarket.com",
-    137, // Polygon mainnet
-    wallet, // ethers v5 Wallet as signer
-    undefined, // creds - let client derive them via L1 auth
-    sigType, // signature type
-    funderAddress, // funder address for proxy wallets
+    137,
+    wallet,
+    undefined,
+    sigType,
+    funderAddress,
   );
 
-  // Derive API credentials via L1 auth
   try {
     const creds = await client.deriveApiKey();
-    console.log("Derived API creds for trading:", creds.apiKey?.substring(0, 8));
-    // Re-init client with derived creds for order placement
+    console.log("Derived API creds:", creds.apiKey?.substring(0, 8));
+    
     const authedClient = new ClobClient(
       "https://clob.polymarket.com",
       137,
@@ -262,7 +260,7 @@ async function placeOrderViaClobClient(
       funderAddress,
     );
 
-    // Determine tick size from the orderbook
+    // Determine tick size
     let tickSize = "0.01";
     try {
       const book = await getOrderbook(tokenId);
@@ -271,30 +269,48 @@ async function placeOrderViaClobClient(
       }
     } catch {}
 
-    // Round price to valid tick
     const tick = parseFloat(tickSize);
     const roundedPrice = Math.round(price / tick) * tick;
     const finalPrice = Math.max(tick, Math.min(1 - tick, roundedPrice));
 
-    console.log(`Placing order: token=${tokenId.substring(0, 20)}..., side=${side}, size=${size}, price=${finalPrice}, tick=${tickSize}, negRisk=${negRisk}`);
+    console.log(`Creating signed order: token=${tokenId.substring(0, 20)}..., side=${side}, size=${size}, price=${finalPrice}, tick=${tickSize}`);
 
     const clobSide = side === "BUY" ? ClobSide.BUY : ClobSide.SELL;
     
-    const response = await authedClient.createAndPostOrder({
+    // Create the signed order WITHOUT posting it
+    const signedOrder = await authedClient.createOrder({
       tokenID: tokenId,
       price: finalPrice,
       size: size,
       side: clobSide,
-      orderType: OrderType.FOK, // Fill-or-Kill for immediate execution
+      orderType: OrderType.FOK,
     }, {
       tickSize,
       negRisk,
     });
 
-    console.log("Order response:", JSON.stringify(response));
-    return response;
+    console.log("Order signed successfully");
+
+    // Build the L2 headers the client needs to submit
+    const timestamp = Math.floor(Date.now() / 1000);
+    const orderPayload = JSON.stringify(signedOrder);
+    const hmacSig = await buildPolyHmacSignature(creds.secret, timestamp, "POST", "/order", orderPayload);
+
+    return {
+      signedOrder,
+      headers: {
+        "POLY_ADDRESS": wallet.address,
+        "POLY_SIGNATURE": hmacSig,
+        "POLY_TIMESTAMP": `${timestamp}`,
+        "POLY_API_KEY": creds.apiKey,
+        "POLY_PASSPHRASE": creds.passphrase,
+      },
+      submitUrl: "https://clob.polymarket.com/order",
+      finalPrice,
+      tickSize,
+    };
   } catch (e) {
-    console.error("ClobClient order error:", e);
+    console.error("Sign order error:", e);
     return { error: e instanceof Error ? e.message : String(e) };
   }
 }
@@ -674,7 +690,11 @@ serve(async (req) => {
         });
       }
 
+      case "sign-order":
       case "place-trade": {
+        // Both actions sign the order server-side
+        // "sign-order" returns the signed payload for client-side submission
+        // "place-trade" also returns the signed payload (client submits to bypass geoblock)
         if (!POLY_WALLET_KEY) {
           return new Response(
             JSON.stringify({ error: "Wallet private key not configured for trading" }),
@@ -690,7 +710,7 @@ serve(async (req) => {
           );
         }
 
-        const result = await placeOrderViaClobClient(
+        const result = await signOrder(
           POLY_WALLET_KEY,
           POLY_PROXY_ADDRESS || undefined,
           tokenId,
