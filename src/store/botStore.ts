@@ -84,17 +84,16 @@ interface BotState {
   reset: () => void;
 }
 
-const DEFAULT_PROMPT = `JSON output ONLY. Analyze Polymarket markets and recommend trades.
+const DEFAULT_PROMPT = `JSON output ONLY. Analyze Polymarket markets ending soon.
 
-VARS: RSI/ADX/BB/momo/sentiment/spread/corr/gas/oracle_noise/fees.
+STRATEGY: For crypto Up/Down markets, use BTC 24h price change as primary signal.
+- BTC change NEGATIVE → SELL (bet NO/Down wins). This is statistically strongest.
+- BTC change POSITIVE → BUY (bet YES/Up wins).
+- ONLY trade when price gives good risk/reward (entry 0.30-0.55 range preferred).
+- Skip if no clear edge. Empty hypos is fine.
+- Max size: $1 per trade in live mode, 5% bankroll in sim.
 
-1. Draft 100 hypos/top markets.
-2. 3000 MC paths (hist vol/regimes).
-3. Kelly size/score PnL/Sharpe/MDD.
-4. Exec top → new bankroll.
-5. Rules evolve.
-
-JSON: {"cycle":N,"bankroll":X,"sharpe":Y,"mdd":Z,"hypos":[{"market":"...","action":"BUY/SELL","size":N,"pnl":N}],"rules":[".."],"log":".."}`;
+JSON: {"cycle":N,"bankroll":X,"sharpe":Y,"mdd":Z,"hypos":[{"market":"exact market name","action":"BUY/SELL","size":N,"pnl":0,"price":0.5}],"rules":[".."],"log":".."}`;
 
 export const useBotStore = create<BotState>((set) => ({
   running: false,

@@ -95,8 +95,8 @@ serve(async (req) => {
     const marketsMap = polyResult.marketsMap;
 
     const modeNote = liveTrading
-      ? `\n⚡ LIVE TRADING MODE: Your recommendations will be executed as REAL orders on Polymarket. Be conservative with sizing. Focus on markets with high liquidity and imminent resolution. Include token_id if available from the market data.`
-      : `\n📊 SIMULATION MODE: This is a paper trading simulation.`;
+      ? `\n⚡ LIVE TRADING MODE: Real orders will be placed. Be VERY conservative. Max 1-2 trades per cycle. Focus ONLY on markets ending in <5 minutes with clear directional signals.`
+      : `\n📊 SIMULATION MODE: Paper trading simulation.`;
 
     const userMessage = `Cycle ${cycle}. Bankroll: ${bankroll}.${modeNote}
 
@@ -117,11 +117,19 @@ ${systemPrompt}`;
         messages: [
           {
             role: "system",
-            content: `You are a quantitative trading simulation engine. You MUST respond with valid JSON only. No markdown, no explanation, no code blocks, just pure JSON object.
+            content: `You are an expert quantitative trading engine for Polymarket prediction markets. You MUST respond with valid JSON only. No markdown, no explanation, no code blocks.
 
-CRITICAL: In the "market" field of each hypo, use the EXACT human-readable market question (e.g. "Bitcoin Up or Down - February 16, 7:00AM-7:05AM ET"). Do NOT put conditionId hashes in the market field. The conditionId is metadata only — never use it as the market name.
+STRATEGY RULES:
+- ONLY trade markets ending within 10 minutes where outcome is highly predictable
+- For crypto Up/Down markets: check BTC 24h change%. If negative → SELL (bet on Down/NO). If positive → BUY (bet on Up/YES). This is the MOST RELIABLE signal.
+- Parse "outcomePrices" carefully: format is "[YesPrice, NoPrice]". If you SELL (bet NO wins), your edge = NoPrice when NO wins (payout = size * (1 - entry_price)). If you BUY (bet YES wins), your edge = YesPrice.  
+- NEVER buy YES at price > 0.65 or buy NO at price > 0.65 — the risk/reward is terrible
+- PREFER trades where your side is priced 0.30-0.55 (maximum edge)
+- Size: never more than 5% of bankroll per trade. For live trading, max $1 per trade.
+- If no clear edge exists, return EMPTY hypos array — skipping is better than gambling
+- Include "price" field with the ACTUAL market price you're entering at
 
-For the "price" field, use the actual market price from the data (parse outcomePrices). Do NOT default to 0.5 unless the price truly is 0.50.`,
+CRITICAL: In the "market" field, use the EXACT human-readable market question. Do NOT use conditionId hashes.`,
           },
           { role: "user", content: userMessage },
         ],

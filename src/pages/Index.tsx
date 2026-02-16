@@ -177,33 +177,53 @@ const Dashboard = () => {
         return { status: 'filled', price: signResult.finalPrice, result: signResult.result };
       }
 
-      // If geoblocked, try browser-side submission
+      // If geoblocked, try multiple fallback submission methods
       if (signResult?.geoblocked && signResult?.signedOrder) {
-        addLog(`🌐 Server geoblocked, submitting from browser...`);
+        const orderBody = JSON.stringify(signResult.signedOrder);
+        const polyHeaders = signResult.headers;
+
+        // Attempt 1: corsproxy.io (US-based, not datacenter-blocked)
+        addLog(`🌐 Server geoblocked, trying CORS proxy...`);
         try {
           const proxyUrl = `https://corsproxy.io/?url=${encodeURIComponent(signResult.submitUrl)}`;
-          const submitRes = await fetch(proxyUrl, {
+          const corsRes = await fetch(proxyUrl, {
             method: "POST",
-            headers: {
-              ...signResult.headers,
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify(signResult.signedOrder),
+            headers: { ...polyHeaders, "Content-Type": "application/json" },
+            body: orderBody,
           });
-          const submitBody = await submitRes.text();
-          
-          if (!submitRes.ok) {
-            addLog(`❌ Browser submit failed [${submitRes.status}]: ${submitBody}`);
-            return { status: 'failed', error: submitBody };
-          }
+          const corsBody = await corsRes.text();
 
-          const submitResult = JSON.parse(submitBody);
-          addLog(`✅ Trade executed via browser: ${hypo.action} ${hypo.size} @ $${signResult.finalPrice?.toFixed(4)}`);
-          return { status: 'filled', price: signResult.finalPrice, result: submitResult };
-        } catch (submitErr: any) {
-          addLog(`❌ Browser submit error: ${submitErr.message}`);
-          return { status: 'failed', error: submitErr.message };
+          if (corsRes.ok) {
+            const result = JSON.parse(corsBody);
+            addLog(`✅ Trade executed via CORS proxy: ${hypo.action} ${hypo.size} @ $${signResult.finalPrice?.toFixed(4)}`);
+            return { status: 'filled', price: signResult.finalPrice, result };
+          }
+          addLog(`⚠ CORS proxy returned [${corsRes.status}]: ${corsBody.substring(0, 100)}`);
+        } catch (corsErr: any) {
+          addLog(`⚠ CORS proxy failed: ${corsErr.message}`);
         }
+
+        // Attempt 2: Edge function proxy (also likely geoblocked but try anyway)
+        addLog(`🔄 Trying edge function proxy...`);
+        try {
+          const { data: proxyResult, error: proxyErr } = await supabase.functions.invoke("polymarket-trade", {
+            body: {
+              action: "proxy-submit",
+              signedOrder: signResult.signedOrder,
+              headers: polyHeaders,
+              submitUrl: signResult.submitUrl,
+            },
+          });
+
+          if (!proxyErr && proxyResult && !proxyResult.error) {
+            addLog(`✅ Trade executed via edge proxy: ${hypo.action} ${hypo.size} @ $${signResult.finalPrice?.toFixed(4)}`);
+            return { status: 'filled', price: signResult.finalPrice, result: proxyResult };
+          }
+          addLog(`⚠ Edge proxy: ${proxyResult?.error || proxyErr?.message || 'failed'}`);
+        } catch {}
+
+        addLog(`❌ All submission methods failed. Order was signed but could not be placed. The simulation will still track this bet.`);
+        return { status: 'failed', error: 'Geoblocked - all submission paths failed' };
       }
 
       addLog(`❌ Unexpected sign result: ${JSON.stringify(signResult).substring(0, 200)}`);
