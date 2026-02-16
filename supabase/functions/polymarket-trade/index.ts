@@ -309,11 +309,13 @@ async function signAndSubmitOrder(
 
     console.log("Order signed successfully");
 
-    const US_PROXY_URL = "http://35.229.117.3:3128"; // Your relay
-    if (true) {
-      // Always try proxy
+    // Try submitting via US proxy if configured
+    const US_PROXY_URL = "http://35.229.117.3:3128"; // HARDCODE relay
+    if (US_PROXY_URL) {
       try {
-        console.log(`Proxy submit → ${US_PROXY_URL}/submit-order`);
+        console.log(`Submitting order via US proxy: ${US_PROXY_URL}`);
+
+        // Build L2 HMAC headers for the order submission
         const timestamp = Math.floor(Date.now() / 1000);
         const orderBody = JSON.stringify(signedOrder);
         const l2Headers = await getL2Headers(
@@ -332,7 +334,10 @@ async function signAndSubmitOrder(
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             order: signedOrder,
-            polyHeaders: l2Headers,
+            polyHeaders: {
+              ...l2Headers,
+              "Content-Type": "application/json",
+            },
             targetUrl: `${CLOB_HOST}/order`,
           }),
         });
