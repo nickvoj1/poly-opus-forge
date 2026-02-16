@@ -556,6 +556,95 @@ serve(async (req) => {
         });
       }
 
+      case "derive-api-key": {
+        // One-time L1 auth to derive trading API keys from the wallet private key
+        if (!POLY_WALLET_KEY) {
+          return new Response(
+            JSON.stringify({ error: "POLYMARKET_WALLET_PRIVATE_KEY not configured" }),
+            { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+          );
+        }
+
+        try {
+          const { ethers } = await import("https://esm.sh/ethers@5.7.2");
+          const pk = POLY_WALLET_KEY.startsWith("0x") ? POLY_WALLET_KEY : `0x${POLY_WALLET_KEY}`;
+          const wallet = new ethers.Wallet(pk);
+          const address = wallet.address;
+          const timestamp = Math.floor(Date.now() / 1000);
+          const nonce = params.nonce ?? 0;
+
+          // Build EIP-712 signature for L1 auth
+          const domain = { name: "ClobAuthDomain", version: "1", chainId: 137 };
+          const types = {
+            ClobAuth: [
+              { name: "address", type: "address" },
+              { name: "timestamp", type: "string" },
+              { name: "nonce", type: "uint256" },
+              { name: "message", type: "string" },
+            ],
+          };
+          const value = {
+            address,
+            timestamp: `${timestamp}`,
+            nonce,
+            message: "This message attests that I control the given wallet",
+          };
+          const signature = await wallet._signTypedData(domain, types, value);
+
+          const l1Headers = {
+            "POLY_ADDRESS": address,
+            "POLY_SIGNATURE": signature,
+            "POLY_TIMESTAMP": `${timestamp}`,
+            "POLY_NONCE": `${nonce}`,
+          };
+
+          // Try derive first, then create if not found
+          let res = await fetch(`${CLOB_HOST}/auth/derive-api-key`, {
+            method: "GET",
+            headers: { ...l1Headers, "Content-Type": "application/json" },
+          });
+
+          let result;
+          if (res.ok) {
+            result = await res.json();
+          } else {
+            const deriveErr = await res.text();
+            console.log("Derive failed, trying create:", deriveErr);
+            
+            // Try creating new API key
+            res = await fetch(`${CLOB_HOST}/auth/api-key`, {
+              method: "POST",
+              headers: { ...l1Headers, "Content-Type": "application/json" },
+            });
+
+            if (!res.ok) {
+              const createErr = await res.text();
+              return new Response(
+                JSON.stringify({ error: `Both derive and create failed. Derive: ${deriveErr}. Create: ${createErr}` }),
+                { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+              );
+            }
+            result = await res.json();
+          }
+
+          return new Response(JSON.stringify({
+            walletAddress: address,
+            apiKey: result.apiKey,
+            secret: result.secret,
+            passphrase: result.passphrase,
+            note: "Save these credentials! Update POLYMARKET_API_KEY, POLYMARKET_API_SECRET, POLYMARKET_PASSPHRASE secrets with these values.",
+          }), {
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
+        } catch (e) {
+          console.error("derive-api-key error:", e);
+          return new Response(
+            JSON.stringify({ error: e instanceof Error ? e.message : "Unknown error" }),
+            { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+          );
+        }
+      }
+
       default:
         return new Response(
           JSON.stringify({ error: `Unknown action: ${action}` }),
