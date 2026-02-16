@@ -358,19 +358,23 @@ serve(async (req) => {
     const POLY_SECRET = Deno.env.get("POLYMARKET_API_SECRET");
     const POLY_PASSPHRASE = Deno.env.get("POLYMARKET_PASSPHRASE");
     const POLY_WALLET_KEY = Deno.env.get("POLYMARKET_WALLET_PRIVATE_KEY");
+    const POLY_PROXY_ADDRESS = Deno.env.get("POLYMARKET_PROXY_ADDRESS");
 
-    // Derive wallet address from private key if available
-    let walletAddress = "";
+    // Derive EOA wallet address from private key if available
+    let eoaAddress = "";
     if (POLY_WALLET_KEY) {
       try {
-        // Use ethers to derive address from private key
         const { ethers } = await import("https://esm.sh/ethers@5.7.2");
         const wallet = new ethers.Wallet(POLY_WALLET_KEY.startsWith("0x") ? POLY_WALLET_KEY : `0x${POLY_WALLET_KEY}`);
-        walletAddress = wallet.address.toLowerCase();
+        eoaAddress = wallet.address.toLowerCase();
       } catch (e) {
         console.error("Failed to derive wallet address:", e);
       }
     }
+
+    // Use proxy address for CLOB API calls, EOA for on-chain queries
+    const walletAddress = POLY_PROXY_ADDRESS?.toLowerCase() || eoaAddress;
+    const onChainAddress = eoaAddress;
 
     const { action, ...params } = await req.json();
 
@@ -429,8 +433,8 @@ serve(async (req) => {
         let polymarketUsdc = 0;
         if (connected) {
           const [v, onChainBal] = await Promise.all([
-            verifyCredentials(POLY_API_KEY!, POLY_SECRET!, POLY_PASSPHRASE!, walletAddress),
-            getWalletBalance(walletAddress),
+            verifyCredentials(POLY_API_KEY!, POLY_SECRET!, POLY_PASSPHRASE!, eoaAddress || walletAddress),
+            getWalletBalance(onChainAddress || walletAddress),
           ]);
           verified = v;
           balance = onChainBal;
@@ -468,7 +472,7 @@ serve(async (req) => {
           );
         }
         // Get on-chain balance
-        const onChainBal = await getWalletBalance(walletAddress);
+        const onChainBal = await getWalletBalance(onChainAddress || walletAddress);
         
         // Also get Polymarket proxy wallet USDC balance via CLOB API
         let polymarketUsdc = 0;
