@@ -218,9 +218,9 @@ async function getWalletBalance(walletAddress: string): Promise<{ usdc: number; 
   return { usdc: totalUsdc, matic };
 }
 
-// Sign order using official ClobClient with full EIP-712 signing
-// Returns the signed order payload for client-side submission (bypasses geoblock)
-async function signOrder(
+// Sign and submit order using official ClobClient with full EIP-712 signing
+// Tries server-side submission first; if geoblocked (403), returns signed payload for client-side submission
+async function signAndSubmitOrder(
   walletPrivateKey: string,
   proxyAddress: string | undefined,
   tokenId: string,
@@ -291,24 +291,74 @@ async function signOrder(
 
     console.log("Order signed successfully");
 
-    // Build the L2 headers the client needs to submit
+    // Build the L2 headers for submission
     const timestamp = Math.floor(Date.now() / 1000);
     const orderPayload = JSON.stringify(signedOrder);
     const hmacSig = await buildPolyHmacSignature(creds.secret, timestamp, "POST", "/order", orderPayload);
 
-    return {
-      signedOrder,
-      headers: {
-        "POLY_ADDRESS": wallet.address,
-        "POLY_SIGNATURE": hmacSig,
-        "POLY_TIMESTAMP": `${timestamp}`,
-        "POLY_API_KEY": creds.apiKey,
-        "POLY_PASSPHRASE": creds.passphrase,
-      },
-      submitUrl: "https://clob.polymarket.com/order",
-      finalPrice,
-      tickSize,
+    const submitHeaders = {
+      "POLY_ADDRESS": wallet.address,
+      "POLY_SIGNATURE": hmacSig,
+      "POLY_TIMESTAMP": `${timestamp}`,
+      "POLY_API_KEY": creds.apiKey,
+      "POLY_PASSPHRASE": creds.passphrase,
+      "Content-Type": "application/json",
     };
+
+    // Try server-side submission first
+    console.log("Attempting server-side order submission...");
+    try {
+      const submitRes = await fetch("https://clob.polymarket.com/order", {
+        method: "POST",
+        headers: submitHeaders,
+        body: orderPayload,
+      });
+      const submitBody = await submitRes.text();
+      console.log(`Server submit response [${submitRes.status}]: ${submitBody.substring(0, 200)}`);
+
+      if (submitRes.ok) {
+        const result = JSON.parse(submitBody);
+        return {
+          submitted: true,
+          status: "filled",
+          result,
+          finalPrice,
+          tickSize,
+        };
+      }
+
+      if (submitRes.status === 403) {
+        console.log("Server geoblocked (403), returning signed order for client-side submission");
+        return {
+          submitted: false,
+          geoblocked: true,
+          signedOrder,
+          headers: submitHeaders,
+          submitUrl: "https://clob.polymarket.com/order",
+          finalPrice,
+          tickSize,
+        };
+      }
+
+      // Other error
+      return {
+        submitted: false,
+        error: `Submit failed [${submitRes.status}]: ${submitBody}`,
+        finalPrice,
+      };
+    } catch (fetchErr: any) {
+      console.error("Server submit fetch error:", fetchErr.message);
+      // Network error - return for client submission
+      return {
+        submitted: false,
+        geoblocked: true,
+        signedOrder,
+        headers: submitHeaders,
+        submitUrl: "https://clob.polymarket.com/order",
+        finalPrice,
+        tickSize,
+      };
+    }
   } catch (e) {
     console.error("Sign order error:", e);
     return { error: e instanceof Error ? e.message : String(e) };
@@ -710,7 +760,7 @@ serve(async (req) => {
           );
         }
 
-        const result = await signOrder(
+        const result = await signAndSubmitOrder(
           POLY_WALLET_KEY,
           POLY_PROXY_ADDRESS || undefined,
           tokenId,

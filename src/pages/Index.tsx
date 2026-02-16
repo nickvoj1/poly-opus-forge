@@ -155,7 +155,7 @@ const Dashboard = () => {
 
       addLog(`📊 ${hypo.market}: price=$${price.toFixed(4)}, size=${hypo.size}`);
 
-      // Sign the order server-side (EIP-712)
+      // Sign (and possibly submit) the order server-side
       const { data: signResult } = await supabase.functions.invoke("polymarket-trade", {
         body: {
           action: "sign-order",
@@ -171,31 +171,43 @@ const Dashboard = () => {
         return { status: 'failed', error: signResult.error };
       }
 
-      // Submit the signed order from the browser (bypasses server geoblock)
-      addLog(`📝 Order signed, submitting from browser...`);
-      try {
-        const submitRes = await fetch(signResult.submitUrl, {
-          method: "POST",
-          headers: {
-            ...signResult.headers,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify(signResult.signedOrder),
-        });
-        const submitBody = await submitRes.text();
-        
-        if (!submitRes.ok) {
-          addLog(`❌ Submit failed [${submitRes.status}]: ${submitBody}`);
-          return { status: 'failed', error: submitBody };
-        }
-
-        const submitResult = JSON.parse(submitBody);
-        addLog(`✅ Trade executed: ${hypo.action} ${hypo.size} @ $${price.toFixed(4)}`);
-        return { status: 'filled', price, result: submitResult };
-      } catch (submitErr: any) {
-        addLog(`❌ Submit error: ${submitErr.message}`);
-        return { status: 'failed', error: submitErr.message };
+      // If server submitted successfully, we're done
+      if (signResult?.submitted) {
+        addLog(`✅ Trade executed server-side: ${hypo.action} ${hypo.size} @ $${signResult.finalPrice?.toFixed(4)}`);
+        return { status: 'filled', price: signResult.finalPrice, result: signResult.result };
       }
+
+      // If geoblocked, try browser-side submission
+      if (signResult?.geoblocked && signResult?.signedOrder) {
+        addLog(`🌐 Server geoblocked, submitting from browser...`);
+        try {
+          const proxyUrl = `https://corsproxy.io/?url=${encodeURIComponent(signResult.submitUrl)}`;
+          const submitRes = await fetch(proxyUrl, {
+            method: "POST",
+            headers: {
+              ...signResult.headers,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify(signResult.signedOrder),
+          });
+          const submitBody = await submitRes.text();
+          
+          if (!submitRes.ok) {
+            addLog(`❌ Browser submit failed [${submitRes.status}]: ${submitBody}`);
+            return { status: 'failed', error: submitBody };
+          }
+
+          const submitResult = JSON.parse(submitBody);
+          addLog(`✅ Trade executed via browser: ${hypo.action} ${hypo.size} @ $${signResult.finalPrice?.toFixed(4)}`);
+          return { status: 'filled', price: signResult.finalPrice, result: submitResult };
+        } catch (submitErr: any) {
+          addLog(`❌ Browser submit error: ${submitErr.message}`);
+          return { status: 'failed', error: submitErr.message };
+        }
+      }
+
+      addLog(`❌ Unexpected sign result: ${JSON.stringify(signResult).substring(0, 200)}`);
+      return { status: 'failed', error: 'Unexpected response' };
     } catch (e: any) {
       addLog(`❌ Trade error: ${e.message}`);
       return { status: 'failed', error: e.message };
