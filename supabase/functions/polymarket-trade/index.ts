@@ -372,19 +372,21 @@ serve(async (req) => {
 
     // Derive EOA wallet address from private key if available
     let eoaAddress = "";
+    let eoaAddressChecksum = "";
     if (POLY_WALLET_KEY) {
       try {
         const { ethers } = await import("https://esm.sh/ethers@5.7.2");
         const wallet = new ethers.Wallet(POLY_WALLET_KEY.startsWith("0x") ? POLY_WALLET_KEY : `0x${POLY_WALLET_KEY}`);
         eoaAddress = wallet.address.toLowerCase();
+        eoaAddressChecksum = wallet.address; // Keep checksummed version for CLOB API auth
       } catch (e) {
         console.error("Failed to derive wallet address:", e);
       }
     }
 
-    // Use EOA address for CLOB API L2 auth (must match address used to derive API keys)
+    // Use checksummed EOA address for CLOB API L2 auth headers (must match address used to derive API keys)
     // Use proxy address for on-chain balance queries and positions
-    const clobAuthAddress = eoaAddress;
+    const clobAuthAddress = eoaAddressChecksum;
     const proxyAddress = POLY_PROXY_ADDRESS?.toLowerCase() || eoaAddress;
     const onChainAddress = proxyAddress;
 
