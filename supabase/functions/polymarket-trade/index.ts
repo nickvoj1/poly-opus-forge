@@ -92,126 +92,51 @@ async function getWalletBalance(walletAddress: string): Promise<{ usdc: number; 
   return { usdc: totalUsdc, matic };
 }
 
-// ── Sign & Submit Order (via Railway Relay) ──
+// ── Submit Order via Railway Relay (relay handles signing + submission) ──
 async function signAndSubmitOrder(
-  walletPrivateKey: string, proxyAddress: string | undefined,
-  tokenId: string, side: "BUY" | "SELL", size: number, price: number, negRisk = false,
-  storedCreds?: { apiKey: string; secret: string; passphrase: string },
+  _walletPrivateKey: string, _proxyAddress: string | undefined,
+  tokenId: string, side: "BUY" | "SELL", size: number, price: number, _negRisk = false,
+  _storedCreds?: { apiKey: string; secret: string; passphrase: string },
 ): Promise<any> {
-  const { ethers } = await import("https://esm.sh/ethers@5.7.2");
-  const pk = walletPrivateKey.startsWith("0x") ? walletPrivateKey : `0x${walletPrivateKey}`;
-  const wallet = new ethers.Wallet(pk);
-  const sigType = 1; // POLY_PROXY
-  const funderAddress = proxyAddress || wallet.address;
+  const RELAY_URL = Deno.env.get("RELAY_SERVER_URL") || "https://polymarket-kit-production.up.railway.app";
+  const RELAY_SECRET = Deno.env.get("RELAY_SECRET") || "";
 
-  console.log(`Signing: sigType=${sigType}, funder=${funderAddress?.substring(0, 10)}, eoa=${wallet.address.substring(0, 10)}`);
+  console.log(`Submitting trade to relay: ${side} $${size} of ${tokenId.substring(0, 20)}... @ $${price}`);
 
   try {
-    // Step 1: Use stored credentials if available, otherwise derive
-    let creds: any;
-    if (storedCreds?.apiKey && storedCreds?.secret && storedCreds?.passphrase) {
-      creds = { apiKey: storedCreds.apiKey, secret: storedCreds.secret, passphrase: storedCreds.passphrase };
-      console.log("Using stored L2 creds:", creds.apiKey?.substring(0, 8));
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (RELAY_SECRET) headers["x-relay-secret"] = RELAY_SECRET;
+
+    const relayRes = await fetch(`${RELAY_URL}/trade`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        tokenId,
+        side,
+        amount: size,
+        price,
+        orderType: "FAK", // Fill and Kill — allows partial fills
+      }),
+    });
+
+    const result = await relayRes.json();
+    console.log(`Relay response [${relayRes.status}]:`, JSON.stringify(result).substring(0, 500));
+
+    if (result.success || result.submitted) {
+      console.log(`✅ Order submitted → ID: ${result.orderID} (via relay)`);
+      return {
+        submitted: true,
+        result: result.data || result,
+        finalPrice: result.finalPrice || price,
+        tickSize: result.tickSize || "0.01",
+        via: "railway-relay-clob-client",
+      };
     } else {
-      const initClient = new ClobClient("https://clob.polymarket.com", 137, wallet, undefined, sigType, funderAddress);
-      try {
-        creds = await initClient.deriveApiKey();
-        console.log("Derived L2 creds:", creds.apiKey?.substring(0, 8));
-      } catch (e1) {
-        try { creds = await initClient.createOrDeriveApiKey(); } catch (e2) {
-          return { error: `L2_AUTH_FAILED: ${e2 instanceof Error ? e2.message : String(e2)}` };
-        }
-      }
-    }
-
-    // Step 2: Create authenticated client
-    const authedClient = new ClobClient("https://clob.polymarket.com", 137, wallet,
-      { key: creds.apiKey, secret: creds.secret, passphrase: creds.passphrase }, sigType, funderAddress);
-
-    // Step 3: Determine tick size
-    let tickSize = "0.01";
-    try {
-      const book = await getOrderbook(tokenId);
-      if (book?.market?.minimum_tick_size) tickSize = book.market.minimum_tick_size;
-    } catch {}
-
-    const tick = parseFloat(tickSize);
-    const roundedPrice = Math.round(price / tick) * tick;
-    const finalPrice = Math.max(tick, Math.min(1 - tick, roundedPrice));
-
-    console.log(`Order: token=${tokenId.substring(0, 20)}…, ${side}, sz=${size}, px=${finalPrice}, tick=${tickSize}`);
-
-    // Step 4: Create signed order
-    const signedOrder = await authedClient.createOrder(
-      { tokenID: tokenId, price: finalPrice, size, side: side === "BUY" ? ClobSide.BUY : ClobSide.SELL, orderType: OrderType.FOK },
-      { tickSize, negRisk },
-    );
-
-    console.log("Order signed, submitting via Railway relay…");
-
-    // Step 5: Submit via US relay server to bypass geoblocking
-    const timestamp = Math.floor(Date.now() / 1000);
-    const orderBody = JSON.stringify(signedOrder);
-    const l2Headers = await getL2Headers(creds.apiKey, creds.secret, creds.passphrase, timestamp, "POST", "/order", orderBody, wallet.address);
-
-    const RELAY_URL = Deno.env.get("RELAY_SERVER_URL") || "https://polymarket-kit-production.up.railway.app";
-    const RELAY_SECRET = Deno.env.get("RELAY_SECRET") || "";
-    let submitRes: Response;
-    let submitBody: string;
-    let via = "direct";
-
-    try {
-      console.log(`Submitting order via relay: ${RELAY_URL}/order`);
-      const relayHeaders: Record<string, string> = { "Content-Type": "application/json" };
-      if (RELAY_SECRET) relayHeaders["x-relay-secret"] = RELAY_SECRET;
-
-      const relayRes = await fetch(`${RELAY_URL}/order`, {
-        method: "POST",
-        headers: relayHeaders,
-        body: JSON.stringify({ order: signedOrder, headers: { ...l2Headers, "Content-Type": "application/json" } }),
-      });
-      const relayData = await relayRes.json();
-      console.log(`Relay response [${relayRes.status}]:`, JSON.stringify(relayData).substring(0, 500));
-
-      if (relayData.success) {
-        submitRes = new Response(JSON.stringify(relayData.data), { status: relayData.status });
-        submitBody = JSON.stringify(relayData.data);
-        via = "railway-relay";
-      } else {
-        // Relay returned an error from Polymarket
-        submitRes = new Response(JSON.stringify(relayData.data || relayData), { status: relayData.status || 400 });
-        submitBody = JSON.stringify(relayData.data || relayData);
-        via = "railway-relay";
-      }
-    } catch (relayErr) {
-      console.error("Relay failed, trying direct:", relayErr);
-      // Fallback to direct (will be geoblocked but worth trying)
-      submitRes = await fetch(`${CLOB_HOST}/order`, {
-        method: "POST",
-        headers: { ...l2Headers, "Content-Type": "application/json" },
-        body: orderBody,
-      });
-      submitBody = await submitRes.text();
-      console.log(`Direct fallback [${submitRes.status}]: ${submitBody.substring(0, 500)}`);
-    }
-
-    if (submitRes!.ok && submitBody!.trim()) {
-      let result;
-      try { result = JSON.parse(submitBody!); } catch { result = submitBody; }
-      const orderId = result?.orderID || result?.order_id;
-      if (orderId) {
-        console.log(`✅ Order submitted → ID: ${orderId} (via ${via})`);
-        return { submitted: true, result, finalPrice, tickSize, via };
-      } else {
-        console.error(`⚠ No orderID in response (via ${via}): ${submitBody!.substring(0, 300)}`);
-        return { submitted: false, error: `No orderID: ${submitBody!.substring(0, 200)}`, signedOrder, finalPrice, tickSize };
-      }
-    } else {
-      console.error(`Submit FAILED [${submitRes!.status}] (${via}): ${submitBody!.substring(0, 300)}`);
-      return { submitted: false, error: `Polymarket ${submitRes!.status}: ${submitBody!.substring(0, 200)}`, signedOrder, finalPrice, tickSize };
+      console.error(`❌ Relay trade failed: ${result.error}`);
+      return { submitted: false, error: result.error || "relay_trade_failed", finalPrice: result.finalPrice || price };
     }
   } catch (e) {
-    console.error("signAndSubmitOrder error:", e);
+    console.error("Relay request failed:", e);
     return { error: e instanceof Error ? e.message : String(e) };
   }
 }
