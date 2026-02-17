@@ -188,135 +188,50 @@ async function signAndSubmitOrder(
 
     console.log("Order signed, submitting to CLOB via US proxy…");
 
-    // Step 5: Submit via US residential proxy to bypass geoblocking
+    // Step 5: Submit via US relay server to bypass geoblocking
     const timestamp = Math.floor(Date.now() / 1000);
     const orderBody = JSON.stringify(signedOrder);
     const l2Headers = await getL2Headers(creds.apiKey, creds.secret, creds.passphrase, timestamp, "POST", "/order", orderBody, wallet.address);
 
-    const usProxyUrl = Deno.env.get("US_PROXY_URL");
-    const caCert = Deno.env.get("BRIGHTDATA_CA_CERT");
+    const RELAY_URL = Deno.env.get("RELAY_SERVER_URL") || "https://polymarket-kit-production.up.railway.app";
+    const RELAY_SECRET = Deno.env.get("RELAY_SECRET") || "";
     let submitRes: Response;
     let submitBody: string;
     let via = "direct";
 
-    if (usProxyUrl) {
-      const proxyUrl = new URL(usProxyUrl);
-      const username = decodeURIComponent(proxyUrl.username);
-      const password = decodeURIComponent(proxyUrl.password);
-      const baseHost = proxyUrl.hostname;
-      const originalPort = proxyUrl.port;
-      console.log(`Proxy config: host=${baseHost}, port=${originalPort}, user=${username.substring(0, 30)}…`);
+    try {
+      console.log(`Submitting order via relay: ${RELAY_URL}/order`);
+      const relayHeaders: Record<string, string> = { "Content-Type": "application/json" };
+      if (RELAY_SECRET) relayHeaders["x-relay-secret"] = RELAY_SECRET;
 
-      // Fix CA cert format: the secret may have spaces instead of newlines
-      let fixedCert: string | undefined;
-      if (caCert) {
-        // Reconstruct proper PEM format
-        let certBody = caCert
-          .replace(/-----BEGIN CERTIFICATE-----/g, "")
-          .replace(/-----END CERTIFICATE-----/g, "")
-          .replace(/\s+/g, "");
-        // Split into 64-char lines
-        const lines: string[] = [];
-        for (let i = 0; i < certBody.length; i += 64) {
-          lines.push(certBody.substring(i, i + 64));
-        }
-        fixedCert = `-----BEGIN CERTIFICATE-----\n${lines.join("\n")}\n-----END CERTIFICATE-----`;
-        console.log("CA cert fixed, length:", fixedCert.length);
+      const relayRes = await fetch(`${RELAY_URL}/order`, {
+        method: "POST",
+        headers: relayHeaders,
+        body: JSON.stringify({ order: signedOrder, headers: { ...l2Headers, "Content-Type": "application/json" } }),
+      });
+      const relayData = await relayRes.json();
+      console.log(`Relay response [${relayRes.status}]:`, JSON.stringify(relayData).substring(0, 500));
+
+      if (relayData.success) {
+        submitRes = new Response(JSON.stringify(relayData.data), { status: relayData.status });
+        submitBody = JSON.stringify(relayData.data);
+        via = "railway-relay";
+      } else {
+        // Relay returned an error from Polymarket
+        submitRes = new Response(JSON.stringify(relayData.data || relayData), { status: relayData.status || 400 });
+        submitBody = JSON.stringify(relayData.data || relayData);
+        via = "railway-relay";
       }
-
-      // SSL interception via Bright Data port 33335
-      // Bright Data blocks CONNECT to polymarket, so use their SSL interception mode:
-      // 1. TLS connect to proxy (using their CA cert)
-      // 2. Send regular HTTP request inside TLS (proxy forwards to target)
-      let success = false;
-
-      try {
-        console.log(`SSL interception via ${baseHost}:33335…`);
-
-        // 1. TCP connect to proxy
-        const conn = await Deno.connect({ hostname: baseHost, port: 33335 });
-
-        // 2. Upgrade to TLS with proxy's cert (SSL interception)
-        const tlsConn = await Deno.startTls(conn, {
-          hostname: baseHost,
-          caCerts: fixedCert ? [fixedCert] : undefined,
-        });
-
-        // 3. Send HTTP request with proxy auth (full URL in request line)
-        const authB64 = btoa(`${username}:${password}`);
-        const allHeaders = {
-          ...l2Headers,
-          "Content-Type": "application/json",
-          "Host": "clob.polymarket.com",
-          "Content-Length": `${orderBody.length}`,
-          "Proxy-Authorization": `Basic ${authB64}`,
-          "Connection": "close",
-        };
-        const headerLines = Object.entries(allHeaders).map(([k, v]) => `${k}: ${v}`).join("\r\n");
-        const httpReq = `POST https://clob.polymarket.com/order HTTP/1.1\r\n${headerLines}\r\n\r\n${orderBody}`;
-
-        await tlsConn.write(new TextEncoder().encode(httpReq));
-
-        // 4. Read response
-        const chunks: Uint8Array[] = [];
-        let totalLen = 0;
-        while (true) {
-          const readBuf = new Uint8Array(8192);
-          const bytesRead = await tlsConn.read(readBuf);
-          if (bytesRead === null) break;
-          chunks.push(readBuf.subarray(0, bytesRead));
-          totalLen += bytesRead;
-        }
-        tlsConn.close();
-
-        // Concatenate chunks
-        const fullBuf = new Uint8Array(totalLen);
-        let offset = 0;
-        for (const c of chunks) { fullBuf.set(c, offset); offset += c.length; }
-        const fullResponse = new TextDecoder().decode(fullBuf);
-
-        // Parse HTTP response
-        const headerEnd = fullResponse.indexOf("\r\n\r\n");
-        const head = fullResponse.substring(0, headerEnd);
-        const statusLine = head.split("\r\n")[0];
-        const statusCode = parseInt(statusLine.split(" ")[1] || "0");
-        let respBody = fullResponse.substring(headerEnd + 4);
-
-        // Handle chunked transfer encoding
-        if (head.toLowerCase().includes("transfer-encoding: chunked") && respBody) {
-          const decoded: string[] = [];
-          let remaining = respBody;
-          while (remaining.length > 0) {
-            const nlIdx = remaining.indexOf("\r\n");
-            if (nlIdx === -1) break;
-            const chunkSize = parseInt(remaining.substring(0, nlIdx), 16);
-            if (chunkSize === 0 || isNaN(chunkSize)) break;
-            decoded.push(remaining.substring(nlIdx + 2, nlIdx + 2 + chunkSize));
-            remaining = remaining.substring(nlIdx + 2 + chunkSize + 2);
-          }
-          respBody = decoded.join("");
-        }
-
-        console.log(`SSL interception [${statusCode}]: ${respBody.substring(0, 500)}`);
-        submitRes = new Response(respBody, { status: statusCode });
-        submitBody = respBody;
-        via = "ssl-interception-33335";
-        if (statusCode !== 403) success = true;
-      } catch (err) {
-        console.error(`SSL interception failed: ${err}`);
-      }
-
-      if (!success) {
-        return { submitted: false, error: "All proxy attempts failed - geoblocked", signedOrder, finalPrice, tickSize };
-      }
-    } else {
+    } catch (relayErr) {
+      console.error("Relay failed, trying direct:", relayErr);
+      // Fallback to direct (will be geoblocked but worth trying)
       submitRes = await fetch(`${CLOB_HOST}/order`, {
         method: "POST",
         headers: { ...l2Headers, "Content-Type": "application/json" },
         body: orderBody,
       });
       submitBody = await submitRes.text();
-      console.log(`Direct submit [${submitRes.status}]: ${submitBody.substring(0, 500)}`);
+      console.log(`Direct fallback [${submitRes.status}]: ${submitBody.substring(0, 500)}`);
     }
 
     if (submitRes!.ok && submitBody!.trim()) {
