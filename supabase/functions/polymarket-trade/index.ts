@@ -129,6 +129,7 @@ async function getWalletBalance(walletAddress: string): Promise<{ usdc: number; 
 async function signAndSubmitOrder(
   walletPrivateKey: string, proxyAddress: string | undefined,
   tokenId: string, side: "BUY" | "SELL", size: number, price: number, negRisk = false,
+  storedCreds?: { apiKey: string; secret: string; passphrase: string },
 ): Promise<any> {
   const { ethers } = await import("https://esm.sh/ethers@5.7.2");
   const pk = walletPrivateKey.startsWith("0x") ? walletPrivateKey : `0x${walletPrivateKey}`;
@@ -139,15 +140,20 @@ async function signAndSubmitOrder(
   console.log(`Signing: sigType=${sigType}, funder=${funderAddress?.substring(0, 10)}, eoa=${wallet.address.substring(0, 10)}`);
 
   try {
-    // Step 1: Derive L2 trading credentials
-    const initClient = new ClobClient("https://clob.polymarket.com", 137, wallet, undefined, sigType, funderAddress);
+    // Step 1: Use stored credentials if available, otherwise derive
     let creds: any;
-    try {
-      creds = await initClient.createOrDeriveApiKey();
-      console.log("L2 creds OK:", creds.apiKey?.substring(0, 8));
-    } catch (e1) {
-      try { creds = await initClient.deriveApiKey(); } catch (e2) {
-        return { error: `L2_AUTH_FAILED: ${e2 instanceof Error ? e2.message : String(e2)}` };
+    if (storedCreds?.apiKey && storedCreds?.secret && storedCreds?.passphrase) {
+      creds = { apiKey: storedCreds.apiKey, secret: storedCreds.secret, passphrase: storedCreds.passphrase };
+      console.log("Using stored L2 creds:", creds.apiKey?.substring(0, 8));
+    } else {
+      const initClient = new ClobClient("https://clob.polymarket.com", 137, wallet, undefined, sigType, funderAddress);
+      try {
+        creds = await initClient.deriveApiKey();
+        console.log("Derived L2 creds:", creds.apiKey?.substring(0, 8));
+      } catch (e1) {
+        try { creds = await initClient.createOrDeriveApiKey(); } catch (e2) {
+          return { error: `L2_AUTH_FAILED: ${e2 instanceof Error ? e2.message : String(e2)}` };
+        }
       }
     }
 
@@ -367,7 +373,9 @@ serve(async (req) => {
         if (!POLY_WALLET_KEY) return json({ error: "Wallet private key not configured" }, 400);
         const { tokenId, side, size, price, negRisk } = params;
         if (!tokenId || !side || !size || !price) return json({ error: "Missing: tokenId, side, size, price" }, 400);
-        const result = await signAndSubmitOrder(POLY_WALLET_KEY, POLY_PROXY_ADDRESS || undefined, tokenId, side, size, price, negRisk || false);
+        const storedCreds = (POLY_API_KEY && POLY_SECRET && POLY_PASSPHRASE)
+          ? { apiKey: POLY_API_KEY, secret: POLY_SECRET, passphrase: POLY_PASSPHRASE } : undefined;
+        const result = await signAndSubmitOrder(POLY_WALLET_KEY, POLY_PROXY_ADDRESS || undefined, tokenId, side, size, price, negRisk || false, storedCreds);
         return json(result, result.error ? 400 : 200);
       }
 
