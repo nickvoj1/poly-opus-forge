@@ -369,12 +369,16 @@ async function signAndSubmitOrder(
       },
     );
 
-    console.log("Order signed successfully, submitting via proxy...");
+    console.log("Order signed successfully, submitting via Bright Data ISP proxy...");
 
-    // Step 6: ALWAYS submit via US proxy (hardcoded, forced)
-    const US_PROXY_URL = "http://35.229.117.3:3128"; // HARDCODE relay
+    // Step 6: Submit order directly to Polymarket through Bright Data ISP proxy
+    const proxyUrl = Deno.env.get("US_PROXY_URL");
+    if (!proxyUrl) {
+      return { error: "US_PROXY_URL not configured", signedOrder, finalPrice, tickSize };
+    }
+
     try {
-      console.log(`Proxy submit → ${US_PROXY_URL}/submit-order`);
+      console.log(`Proxy submit → Bright Data ISP → ${CLOB_HOST}/order`);
 
       // Build fresh L2 HMAC headers with correct timestamp
       const timestamp = Math.floor(Date.now() / 1000);
@@ -387,24 +391,30 @@ async function signAndSubmitOrder(
         "POST",
         "/order",
         orderBody,
-        wallet.address, // Use checksummed EOA address for HMAC
+        wallet.address,
       );
 
-      const proxyRes = await fetch(`${US_PROXY_URL}/submit-order`, {
+      // Create HTTP client with Bright Data ISP proxy
+      const httpClient = Deno.createHttpClient({
+        proxy: { url: proxyUrl },
+      });
+
+      const proxyRes = await fetch(`${CLOB_HOST}/order`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          order: signedOrder,
-          polyHeaders: {
-            ...l2Headers,
-            "Content-Type": "application/json",
-          },
-          targetUrl: `${CLOB_HOST}/order`,
-        }),
+        headers: {
+          ...l2Headers,
+          "Content-Type": "application/json",
+        },
+        body: orderBody,
+        // @ts-ignore - Deno-specific client option
+        client: httpClient,
       });
 
       const proxyBody = await proxyRes.text();
-      console.log(`Proxy submit response [${proxyRes.status}]: ${proxyBody.substring(0, 500)}`);
+      console.log(`Bright Data proxy response [${proxyRes.status}]: ${proxyBody.substring(0, 500)}`);
+
+      // Close the HTTP client
+      try { httpClient.close(); } catch {}
 
       if (proxyRes.ok) {
         let result;
@@ -413,29 +423,29 @@ async function signAndSubmitOrder(
         } catch {
           result = proxyBody;
         }
-        console.log(`Proxy submit → LIVE order ID: ${result?.orderID || result?.order_id || JSON.stringify(result).substring(0, 50)}`);
+        console.log(`Order submitted → ID: ${result?.orderID || result?.order_id || JSON.stringify(result).substring(0, 50)}`);
         return {
           submitted: true,
           result,
           finalPrice,
           tickSize,
-          via: "us-proxy",
+          via: "brightdata-isp",
         };
       } else {
-        console.error(`Proxy submit FAILED [${proxyRes.status}]: ${proxyBody.substring(0, 300)}`);
+        console.error(`Order submit FAILED [${proxyRes.status}]: ${proxyBody.substring(0, 300)}`);
         return {
           submitted: false,
-          error: `Proxy returned ${proxyRes.status}: ${proxyBody.substring(0, 200)}`,
+          error: `Polymarket returned ${proxyRes.status}: ${proxyBody.substring(0, 200)}`,
           signedOrder,
           finalPrice,
           tickSize,
         };
       }
     } catch (proxyErr) {
-      console.error("US proxy connection error:", proxyErr);
+      console.error("Bright Data proxy error:", proxyErr);
       return {
         submitted: false,
-        error: `Proxy unreachable: ${proxyErr instanceof Error ? proxyErr.message : String(proxyErr)}`,
+        error: `Proxy error: ${proxyErr instanceof Error ? proxyErr.message : String(proxyErr)}`,
         signedOrder,
         finalPrice,
         tickSize,
