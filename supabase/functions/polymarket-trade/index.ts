@@ -224,18 +224,28 @@ async function signAndSubmitOrder(
         console.log("CA cert fixed, length:", fixedCert.length);
       }
 
-      // Try port 33335 with SSL interception (CA cert required)
+      // Try SOCKS5 proxy first (port 22225), then HTTP CONNECT as fallback
       let success = false;
-      const ports = ["33335", "22225"];
-      for (const port of ports) {
+      const attempts = [
+        { port: "22225", transport: "socks5" as const },
+        { port: "22225", transport: "http" as const },
+        { port: "33335", transport: "http" as const },
+      ];
+      for (const { port, transport } of attempts) {
         try {
-          const proxyHostUrl = `http://${baseHost}:${port}`;
+          const label = `${transport}-${port}`;
+          console.log(`Trying ${transport}://${baseHost}:${port}…`);
           const clientOpts: any = {
-            proxy: { url: proxyHostUrl, basicAuth: { username, password } },
+            proxy: {
+              transport,
+              url: `${transport}://${baseHost}:${port}`,
+              basicAuth: { username, password },
+            },
           };
-          if (port === "33335" && fixedCert) clientOpts.caCerts = [fixedCert];
+          if (transport === "http" && port === "33335" && fixedCert) {
+            clientOpts.caCerts = [fixedCert];
+          }
 
-          console.log(`Trying proxy ${baseHost}:${port}…`);
           const httpClient = Deno.createHttpClient(clientOpts);
           submitRes = await fetch(`${CLOB_HOST}/order`, {
             method: "POST",
@@ -245,12 +255,12 @@ async function signAndSubmitOrder(
             client: httpClient,
           });
           submitBody = await submitRes.text();
-          via = `proxy-${port}`;
+          via = label;
           console.log(`${via} [${submitRes.status}]: ${submitBody.substring(0, 500)}`);
           success = true;
           break;
         } catch (err) {
-          console.error(`proxy-${port} failed: ${err}`);
+          console.error(`${transport}-${port} failed: ${err}`);
         }
       }
 
