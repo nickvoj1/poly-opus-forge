@@ -270,8 +270,9 @@ ${systemPrompt}`;
 
 KELLY CRITERION STRATEGY (Target: 250% daily return):
 1. EDGE DETECTION: Calculate TRUE probability using BTC momentum, news sentiment, whale flows, volume patterns.
-   - Edge = TRUE_prob - market_price. ONLY trade when edge > 15% (0.15).
+   - Edge = TRUE_prob - market_price. Trade when edge > 8% (0.08). Be AGGRESSIVE - find edges!
    - BTC 24h change is primary signal. Negative → SELL/NO, Positive → BUY/YES.
+   - Use time decay: markets ending in <10 min with mispriced odds have HUGE edge.
 
 2. KELLY SIZING: f* = (p*b - q) / b where p=win_prob, q=1-p, b=odds.
    - Use AGGRESSIVE Kelly: bet 15% of bankroll per trade (f* capped at 15%).
@@ -281,8 +282,8 @@ KELLY CRITERION STRATEGY (Target: 250% daily return):
    - ONLY CRYPTO markets. Ignore ALL non-crypto markets (politics, sports, weather, etc.).
    - ONLY markets ending SOON: <10 min is ideal, <60 min is acceptable. Do NOT trade markets ending in hours.
    - ONLY high-volume markets (volume > $10,000 or liquidity > $5,000).
-   - Parse "outcomePrices" as "[YesPrice, NoPrice]". Trade the side priced 0.25-0.65.
-   - ALWAYS output at least 1-3 hypos if any crypto markets ending soon are available.
+   - Parse "outcomePrices" as "[YesPrice, NoPrice]". Trade the side priced 0.15-0.75.
+   - YOU MUST output at least 2-5 hypos. If edge is marginal (8-15%), still trade with smaller size. NEVER return 0 hypos if ANY crypto market is ending soon.
 
 4. COMPOUNDING: Target 5+ trades per cycle. Roll winners into next cycle bankroll.
 
