@@ -271,24 +271,24 @@ ${systemPrompt}`;
 KELLY CRITERION STRATEGY (Target: 250% daily return):
 1. EDGE DETECTION: Calculate TRUE probability using BTC momentum, news sentiment, whale flows, volume patterns.
    - Edge = TRUE_prob - market_price. ONLY trade when edge > 15% (0.15).
-   - For crypto markets: BTC 24h change is primary signal. Negative → SELL/NO, Positive → BUY/YES.
-   - For non-crypto: use volume spikes, liquidity shifts, and time decay as signals.
+   - BTC 24h change is primary signal. Negative → SELL/NO, Positive → BUY/YES.
 
 2. KELLY SIZING: f* = (p*b - q) / b where p=win_prob, q=1-p, b=odds.
    - Use AGGRESSIVE Kelly: bet 15% of bankroll per trade (f* capped at 15%).
-   - Live mode: max $2.70 per trade. Sim mode: 15% of bankroll.
+   - Live mode: max $2.70 per trade.
 
 3. MARKET SELECTION:
+   - ONLY CRYPTO markets. Ignore ALL non-crypto markets (politics, sports, weather, etc.).
+   - ONLY markets ending SOON: <10 min is ideal, <60 min is acceptable. Do NOT trade markets ending in hours.
    - ONLY high-volume markets (volume > $10,000 or liquidity > $5,000).
-   - Markets ending in <60 minutes preferred, <10 min is ideal for time decay edge.
    - Parse "outcomePrices" as "[YesPrice, NoPrice]". Trade the side priced 0.25-0.65.
-   - ALWAYS output at least 1-3 hypos if any markets are available. Be aggressive.
+   - ALWAYS output at least 1-3 hypos if any crypto markets ending soon are available.
 
 4. COMPOUNDING: Target 5+ trades per cycle. Roll winners into next cycle bankroll.
 
 5. OUTPUT each hypo with: "market" (exact question), "action" (BUY/SELL), "size" (dollar amount), "pnl" (0), "price" (entry price), "edge" (estimated edge), "kelly_f" (kelly fraction used).
 
-CRITICAL: Use EXACT human-readable market question in "market" field. Include "price" with ACTUAL market price. Output format: {"cycle":N,"bankroll":N,"hypos":[...],"log":"..."}`,
+CRITICAL: ONLY trade CRYPTO markets ending SOON (<60 min). Use EXACT market question in "market" field. Output format: {"cycle":N,"bankroll":N,"hypos":[...],"log":"..."}`,
           },
           { role: "user", content: userMessage },
         ],
