@@ -102,7 +102,11 @@ serve(async (req) => {
   }
 
   try {
-    const { cycle, bankroll, systemPrompt, liveTrading } = await req.json();
+    const body = await req.json();
+    const cycle = body.cycle || 1;
+    const bankroll = body.bankroll || 18;
+    const systemPrompt = body.systemPrompt || "Find high-edge trades ending soon. Be aggressive.";
+    const liveTrading = body.liveTrading ?? false;
     const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
     if (!LOVABLE_API_KEY) throw new Error("LOVABLE_API_KEY not configured");
 
