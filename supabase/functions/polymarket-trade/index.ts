@@ -11,62 +11,48 @@ const corsHeaders = {
 
 const CLOB_HOST = "https://clob.polymarket.com";
 
-// Bright Data CA certificates for SSL proxy connections
-const BRIGHTDATA_CA_CERTS = [
-  // Old cert (luminati.io) - works with port 22225, may work with 33335
-  `-----BEGIN CERTIFICATE-----
-MIIFozCCA4ugAwIBAgIJAPnnIqmvvTArMA0GCSqGSIb3DQEBBQUAMD8xCzAJBgNV
-BAYTAklMMQswCQYDVQQIEwJJTDENMAsGA1UEChMESG9sYTEUMBIGA1UEAxMLbHVt
-aW5hdGkuaW8wHhcNMTYwOTI3MTQyODM4WhcNMjYwOTI1MTQyODM4WjA/MQswCQYD
-VQQGEwJJTDELMAkGA1UECBMCSUwxDTALBgNVBAoTBEhvbGExFDASBgNVBAMTC2x1
-bWluYXRpLmlvMIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEAtiqw0DuX
-g5g7BC+Cr7mZvgXB7CsJ10YFb2xwoDZlHHJ8G0KEMUeNiY9EjPR8ZIHlnjGJehsW
-PUvJeSAoDnT+fh4udWyUJ3VSqDTyGpu4DpfLBwaaZP/fq45UeR0oLs3ZJd6joDss
-AjJdQbdBPJj/57MjwbF+jddP6qm9XbCWjYzl1uxdMVjloetyRUgkhkh2ALp/VtK8
-hUj/XgvD/Y1souKYs5DKayJTn+GM6MlSOUBQ0+b8yUbDb/9vjbHlX4pZ8gbgSEFf
-xUV49Sxd6EhRXzFw4TERQVut0cgojmRmrgXXwc4kJi0Uvtc6tV/hJeH2yRS84Ehg
-feY5dcJVc69ILYfGrNmwbFvf5aHZPWFG0kIcy9iMMk+3wSUaBP+FAYyd0i+PJTxy
-5Jfmhs6BHowuEr0zgL+xge+/RCEbVUPvA6w9DWYbpqckZUh9sPga3JcHjaHGs6Cz
-dnjEShgmlBm0DL6JMumLWFJrjztsm56Huuai0F5pwyrsyq8fbK6Sp18sq5/vH3Vy
-t2XAj4EIFvpWHZjuocCe5/5vAbkSXjQ5HEIS+SyVhlFriCy5Mf3fTyMFqwm3tbZv
-jEooumi0/9F2WvisUgheC1uatZ8M+Pzi+Kp3x2SSS992KWs0M35GEstiB09RkNHe
-GItI6qxqY/Npw5u6lBE6Z28ISwvuet1a4vMCAwEAAaOBoTCBnjAdBgNVHQ4EFgQU
-Wq7PsMnq2tuDhTV0oUW4jjzvLTcwbwYDVR0jBGgwZoAUWq7PsMnq2tuDhTV0oUW4
-jjzvLTehQ6RBMD8xCzAJBgNVBAYTAklMMQswCQYDVQQIEwJJTDENMAsGA1UEChME
-SG9sYTEUMBIGA1UEAxMLbHVtaW5hdGkuaW+CCQD55yKpr70wKzAMBgNVHRMEBTAD
-AQH/MA0GCSqGSIb3DQEBBQUAA4ICAQA3oT4lrUErSqXjQtDUINo62KcJWs4kjEd8
-qXZdl/HVim06nOG6DFZCSh8JngFi4MFmSzGlBGxe1pXaYArtekfLWmhwoVoJiiaA
-DAAPItcZNlA9zIORyLZlrXlIuP5xzsb9PbnNWhd9xJHksHGoHDPHAW/KI/GJdjQv
-uuCyObvv1IgGvfHbv4lXGCwQuU0OBGXv1kfZtAqUS+ei5zkK+nY0qc3L3Ce+Ow6h
-/haDe0FDoT7zkwnEHu/ExCGSR3lNnyBAewlPVMzbJznuPMU3FFA3MHT7IcHxJWff
-r8jOXo3qXWqd+T2oDO02KUR2ZVolI8FGx6yIKfLwWnj+eR2dfdMx0tUX4F6mRi4N
-zGmhhIIHtViAMf59tBL7az26C8DGfX0p4oECpKtc86u5bYTbRZ1xrf6t/wFqqgB/
-RVqn9IhSfXNZtxBn8G0odR8sPIiBxJKvkLMDKoAEeErwd0yqnr8FplskFuPn0FY5
-N7n7dj5cHoSUtSAkM6bHCFY+XVtUoy6xisTAobajHvU3e2cDVKizC/ocUbHbTJgh
-nevnzyTtKL2w820PDmI7plFN3wR3epd4kTAP5KT196Pjwjg+Dqgt2OnGAafKr+Qr
-o2cdIF5MbULVkux4RKzpNKaoDtrnvC1jROM5s1R0Lb96dQcS/VwmyX22lKdbbY9F
-ij5GZar9JA==
------END CERTIFICATE-----`,
-];
+// Bright Data CA certificate loaded from secret (port 33335)
+function getBrightDataCACerts(): string[] {
+  const raw = Deno.env.get("BRIGHTDATA_CA_CERT");
+  if (!raw) {
+    console.warn("BRIGHTDATA_CA_CERT secret not set, TLS may fail");
+    return [];
+  }
+  // Normalize: secret may have spaces instead of newlines
+  // Extract base64 body, split into 64-char lines, reconstruct proper PEM
+  const stripped = raw.replace(/-----BEGIN CERTIFICATE-----/g, "")
+    .replace(/-----END CERTIFICATE-----/g, "")
+    .replace(/\s+/g, "");
+  const lines = stripped.match(/.{1,64}/g) || [];
+  const pem = `-----BEGIN CERTIFICATE-----\n${lines.join("\n")}\n-----END CERTIFICATE-----`;
+  return [pem];
+}
 
-// Fetch via HTTP proxy (Bright Data residential/ISP)
+// Fetch via Bright Data residential proxy
+// Strategy: try Deno.createHttpClient with proxy (port 22225, no custom CA needed for standard tunnel)
 async function fetchViaProxy(
   proxyUrl: string,
   targetUrl: string,
   options: RequestInit,
 ): Promise<Response> {
-  // Use Deno.createHttpClient with Bright Data CA cert
-  // Force port 22225 (old cert) if URL has port 33335 (new cert not available)
+  // Port 22225 uses standard HTTPS tunneling (no custom CA needed)
+  // Port 33335 uses SSL interception (needs CA cert)
   let effectiveProxyUrl = proxyUrl;
-  if (proxyUrl.includes(":33335")) {
-    effectiveProxyUrl = proxyUrl.replace(":33335", ":22225");
-    console.log("Switched to port 22225 (old SSL cert)");
+  const needsCACert = proxyUrl.includes(":33335");
+  if (!needsCACert && !proxyUrl.includes(":22225")) {
+    effectiveProxyUrl = proxyUrl.replace(/:(\d+)$/, ":22225");
   }
-  console.log("Using Deno.createHttpClient for proxy");
-  const httpClient = Deno.createHttpClient({
+  
+  console.log(`Proxy fetch: ${effectiveProxyUrl.substring(0, 50)}... → ${targetUrl}`);
+  
+  const clientOpts: any = {
     proxy: { url: effectiveProxyUrl },
-    caCerts: BRIGHTDATA_CA_CERTS,
-  });
+  };
+  if (needsCACert) {
+    clientOpts.caCerts = getBrightDataCACerts();
+  }
+  
+  const httpClient = Deno.createHttpClient(clientOpts);
   try {
     const res = await fetch(targetUrl, {
       ...options,
