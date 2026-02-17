@@ -11,6 +11,125 @@ const corsHeaders = {
 
 const CLOB_HOST = "https://clob.polymarket.com";
 
+// Fetch via HTTP CONNECT proxy (Bright Data ISP)
+// Uses Deno.createHttpClient if available, falls back to CONNECT tunnel
+async function fetchViaProxy(
+  proxyUrl: string,
+  targetUrl: string,
+  options: RequestInit,
+): Promise<Response> {
+  // Try Deno.createHttpClient first (stable in Deno 2.x)
+  if (typeof Deno.createHttpClient === "function") {
+    console.log("Using Deno.createHttpClient for proxy");
+    const httpClient = Deno.createHttpClient({
+      proxy: { url: proxyUrl },
+    });
+    try {
+      const res = await fetch(targetUrl, {
+        ...options,
+        // @ts-ignore - Deno-specific
+        client: httpClient,
+      });
+      return res;
+    } finally {
+      try { httpClient.close(); } catch {}
+    }
+  }
+
+  // Fallback: manual CONNECT tunnel
+  console.log("Deno.createHttpClient unavailable, using CONNECT tunnel");
+  const parsed = new URL(proxyUrl);
+  const proxyHost = parsed.hostname;
+  const proxyPort = parseInt(parsed.port || "33335");
+  const proxyAuth = parsed.username && parsed.password
+    ? btoa(`${decodeURIComponent(parsed.username)}:${decodeURIComponent(parsed.password)}`)
+    : null;
+
+  const target = new URL(targetUrl);
+  const targetHost = target.hostname;
+  const targetPort = parseInt(target.port || "443");
+
+  // Step 1: TCP connect to proxy
+  const conn = await Deno.connect({ hostname: proxyHost, port: proxyPort });
+
+  // Step 2: Send CONNECT request
+  const connectReq = [
+    `CONNECT ${targetHost}:${targetPort} HTTP/1.1`,
+    `Host: ${targetHost}:${targetPort}`,
+    ...(proxyAuth ? [`Proxy-Authorization: Basic ${proxyAuth}`] : []),
+    "",
+    "",
+  ].join("\r\n");
+
+  await conn.write(new TextEncoder().encode(connectReq));
+
+  // Step 3: Read CONNECT response
+  const buf = new Uint8Array(4096);
+  const n = await conn.read(buf);
+  const connectResponse = new TextDecoder().decode(buf.subarray(0, n || 0));
+  if (!connectResponse.includes("200")) {
+    conn.close();
+    throw new Error(`CONNECT failed: ${connectResponse.trim()}`);
+  }
+
+  // Step 4: Upgrade to TLS
+  const tlsConn = await Deno.startTls(conn, { hostname: targetHost });
+
+  // Step 5: Send HTTP request over TLS tunnel
+  const method = options.method || "GET";
+  const headers = options.headers as Record<string, string> || {};
+  const body = options.body as string || "";
+  const path = target.pathname + target.search;
+
+  const httpReq = [
+    `${method} ${path} HTTP/1.1`,
+    `Host: ${targetHost}`,
+    ...Object.entries(headers).map(([k, v]) => `${k}: ${v}`),
+    ...(body ? [`Content-Length: ${new TextEncoder().encode(body).length}`] : []),
+    "",
+    "",
+  ].join("\r\n") + body;
+
+  await tlsConn.write(new TextEncoder().encode(httpReq));
+
+  // Step 6: Read response
+  const respBuf = new Uint8Array(65536);
+  let totalRead = 0;
+  const chunks: Uint8Array[] = [];
+  try {
+    while (true) {
+      const rn = await tlsConn.read(respBuf);
+      if (rn === null) break;
+      chunks.push(respBuf.slice(0, rn));
+      totalRead += rn;
+      // Check if we have the full response (simple heuristic)
+      const partial = new TextDecoder().decode(new Uint8Array(chunks.flatMap(c => [...c])));
+      if (partial.includes("\r\n\r\n")) {
+        // Check content-length or chunked encoding
+        const headerEnd = partial.indexOf("\r\n\r\n");
+        const headerSection = partial.substring(0, headerEnd);
+        const clMatch = headerSection.match(/content-length:\s*(\d+)/i);
+        if (clMatch) {
+          const cl = parseInt(clMatch[1]);
+          const bodyReceived = new TextEncoder().encode(partial.substring(headerEnd + 4)).length;
+          if (bodyReceived >= cl) break;
+        } else if (partial.endsWith("\r\n0\r\n\r\n")) {
+          break; // Chunked transfer complete
+        }
+      }
+    }
+  } catch {}
+  tlsConn.close();
+
+  const fullResp = new TextDecoder().decode(new Uint8Array(chunks.flatMap(c => [...c])));
+  const headerEnd = fullResp.indexOf("\r\n\r\n");
+  const statusLine = fullResp.substring(0, fullResp.indexOf("\r\n"));
+  const statusCode = parseInt(statusLine.split(" ")[1] || "500");
+  const respBody = fullResp.substring(headerEnd + 4);
+
+  return new Response(respBody, { status: statusCode });
+}
+
 async function getL2Headers(
   apiKey: string,
   secret: string,
@@ -394,27 +513,17 @@ async function signAndSubmitOrder(
         wallet.address,
       );
 
-      // Create HTTP client with Bright Data ISP proxy
-      const httpClient = Deno.createHttpClient({
-        proxy: { url: proxyUrl },
-      });
-
-      const proxyRes = await fetch(`${CLOB_HOST}/order`, {
+      const proxyRes = await fetchViaProxy(proxyUrl, `${CLOB_HOST}/order`, {
         method: "POST",
         headers: {
           ...l2Headers,
           "Content-Type": "application/json",
         },
         body: orderBody,
-        // @ts-ignore - Deno-specific client option
-        client: httpClient,
       });
 
       const proxyBody = await proxyRes.text();
       console.log(`Bright Data proxy response [${proxyRes.status}]: ${proxyBody.substring(0, 500)}`);
-
-      // Close the HTTP client
-      try { httpClient.close(); } catch {}
 
       if (proxyRes.ok) {
         let result;
@@ -1003,7 +1112,43 @@ serve(async (req) => {
         }
       }
 
-      case "proxy-submit": {
+      case "test-proxy": {
+        // Quick test to verify Bright Data ISP proxy connectivity
+        const proxyUrl = Deno.env.get("US_PROXY_URL");
+        if (!proxyUrl) {
+          return new Response(JSON.stringify({ error: "US_PROXY_URL not configured" }), {
+            status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
+        }
+        try {
+          console.log("Testing proxy connectivity...");
+          const testRes = await fetchViaProxy(proxyUrl, "https://geo.brdtest.com/welcome.txt?product=isp&method=native", {
+            method: "GET",
+            headers: {},
+          });
+          const testBody = await testRes.text();
+          console.log(`Proxy test [${testRes.status}]: ${testBody.substring(0, 200)}`);
+          
+          // Also test Polymarket endpoint  
+          const polyRes = await fetchViaProxy(proxyUrl, `${CLOB_HOST}/time`, {
+            method: "GET",
+            headers: {},
+          });
+          const polyBody = await polyRes.text();
+          console.log(`Polymarket via proxy [${polyRes.status}]: ${polyBody.substring(0, 200)}`);
+          
+          return new Response(JSON.stringify({
+            proxyTest: { status: testRes.status, body: testBody.substring(0, 200) },
+            polymarketTest: { status: polyRes.status, body: polyBody.substring(0, 200) },
+          }), {
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
+        } catch (e: any) {
+          console.error("Proxy test error:", e);
+          return new Response(JSON.stringify({ error: e.message }), {
+            status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
+        }
         // Browser sends signed order here, edge function forwards to Polymarket
         // This bypasses CORS (browser→edge function is same-origin-ish)
         // Note: this WILL get 403 geoblocked from EU servers, but we try anyway
