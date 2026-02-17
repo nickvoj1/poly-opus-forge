@@ -28,37 +28,50 @@ function getBrightDataCACerts(): string[] {
   return [pem];
 }
 
-// Fetch via Bright Data residential proxy with SSL interception cert
+// Fetch via Bright Data residential proxy
+// Try port 22225 first (standard HTTPS tunnel), fallback to 33335 (SSL interception with CA cert)
 async function fetchViaProxy(
   proxyUrl: string,
   targetUrl: string,
   options: RequestInit,
 ): Promise<Response> {
-  // Always use port 33335 with CA cert for SSL interception
-  let effectiveProxyUrl = proxyUrl;
-  if (!proxyUrl.includes(":33335")) {
-    effectiveProxyUrl = proxyUrl.replace(/:(\d+)$/, ":33335");
+  // Try port 22225 first (standard tunnel, no CA cert needed)
+  const ports = ["22225", "33335"];
+  let lastError: Error | null = null;
+  
+  for (const port of ports) {
+    const effectiveProxyUrl = proxyUrl.replace(/:(\d+)(@|$)/, `:${port}$2`).replace(/:(\d+)$/, `:${port}`);
+    // Fix: ensure port is at end of host, before any path
+    const urlWithPort = proxyUrl.replace(/:\d+$/, `:${port}`);
+    
+    console.log(`Proxy attempt port ${port}: ${urlWithPort.substring(0, 50)}... → ${targetUrl}`);
+    
+    const clientOpts: any = { proxy: { url: urlWithPort } };
+    if (port === "33335") {
+      const caCerts = getBrightDataCACerts();
+      if (caCerts.length > 0) {
+        clientOpts.caCerts = caCerts;
+      }
+    }
+    
+    const httpClient = Deno.createHttpClient(clientOpts);
+    try {
+      const res = await fetch(targetUrl, {
+        ...options,
+        // @ts-ignore - Deno-specific
+        client: httpClient,
+      });
+      console.log(`Proxy port ${port} succeeded: ${res.status}`);
+      return res;
+    } catch (e) {
+      lastError = e instanceof Error ? e : new Error(String(e));
+      console.warn(`Proxy port ${port} failed: ${lastError.message}`);
+    } finally {
+      try { httpClient.close(); } catch {}
+    }
   }
   
-  console.log(`Proxy fetch: ${effectiveProxyUrl.substring(0, 50)}... → ${targetUrl}`);
-  
-  const caCerts = getBrightDataCACerts();
-  console.log(`CA cert loaded: ${caCerts.length > 0 ? 'yes' : 'NO'}, PEM length: ${caCerts[0]?.length || 0}`);
-  
-  const httpClient = Deno.createHttpClient({
-    proxy: { url: effectiveProxyUrl },
-    caCerts: caCerts,
-  });
-  try {
-    const res = await fetch(targetUrl, {
-      ...options,
-      // @ts-ignore - Deno-specific
-      client: httpClient,
-    });
-    return res;
-  } finally {
-    try { httpClient.close(); } catch {}
-  }
+  throw lastError || new Error("All proxy ports failed");
 }
 
 
