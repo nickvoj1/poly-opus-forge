@@ -28,11 +28,17 @@ async function fetchViaProxy(targetUrl: string, options: RequestInit): Promise<R
     if (lower !== "host" && lower !== "connection") forwardHeaders[k] = v;
   });
 
-  const requestBody: any = { zone: "web_unlocker1", url: targetUrl, method, format: "raw" };
+  const requestBody: any = {
+    zone: "web_unlocker1",
+    url: targetUrl,
+    method,
+    format: "raw",
+    country: "us",
+  };
   if (Object.keys(forwardHeaders).length > 0) requestBody.headers = forwardHeaders;
   if (body) requestBody.body = body;
 
-  console.log(`WebUnlocker: ${method} ${targetUrl}`);
+  console.log(`WebUnlocker: ${method} ${targetUrl} (body=${body?.length || 0} bytes)`);
   const res = await fetch("https://api.brightdata.com/request", {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
@@ -40,7 +46,7 @@ async function fetchViaProxy(targetUrl: string, options: RequestInit): Promise<R
   });
 
   const responseBody = await res.text();
-  console.log(`WebUnlocker [${res.status}]: ${responseBody.substring(0, 300)}`);
+  console.log(`WebUnlocker [${res.status}] (${responseBody.length} bytes): ${responseBody.substring(0, 500)}`);
   return new Response(responseBody, { status: res.status, headers: { "Content-Type": "application/json" } });
 }
 
@@ -198,6 +204,8 @@ async function signAndSubmitOrder(
       const username = decodeURIComponent(proxyUrl.username);
       const password = decodeURIComponent(proxyUrl.password);
       const baseHost = proxyUrl.hostname;
+      const originalPort = proxyUrl.port;
+      console.log(`Proxy config: host=${baseHost}, port=${originalPort}, user=${username.substring(0, 30)}…`);
 
       // Fix CA cert format: the secret may have spaces instead of newlines
       let fixedCert: string | undefined;
@@ -247,7 +255,26 @@ async function signAndSubmitOrder(
       }
 
       if (!success) {
-        console.error("All proxy attempts failed");
+        console.log("HTTP proxy failed, trying Web Unlocker API…");
+        try {
+          submitRes = await fetchViaProxy(`${CLOB_HOST}/order`, {
+            method: "POST",
+            headers: { ...l2Headers, "Content-Type": "application/json" },
+            body: orderBody,
+          });
+          submitBody = await submitRes.text();
+          via = "web-unlocker";
+          if (submitBody.trim()) {
+            success = true;
+          } else {
+            console.error("Web Unlocker returned empty body");
+          }
+        } catch (wuErr) {
+          console.error(`Web Unlocker also failed: ${wuErr}`);
+        }
+      }
+
+      if (!success) {
         return { submitted: false, error: "All proxy attempts failed - geoblocked", signedOrder, finalPrice, tickSize };
       }
     } else {
