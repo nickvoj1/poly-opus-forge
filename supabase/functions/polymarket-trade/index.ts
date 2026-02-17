@@ -28,138 +28,64 @@ function getBrightDataCACerts(): string[] {
   return [pem];
 }
 
-// Fetch via Bright Data proxy using multiple methods
-// Try: 1) SOCKS5 on port 22225, 2) Manual CONNECT tunnel on port 33335 with CA cert
+// Fetch via Bright Data Web Unlocker API
+// Simple HTTP API - no proxy tunneling needed
 async function fetchViaProxy(
-  proxyUrl: string,
+  _proxyUrl: string,
   targetUrl: string,
   options: RequestInit,
 ): Promise<Response> {
-  const proxyParsed = new URL(proxyUrl);
-  const proxyHost = proxyParsed.hostname;
-  const proxyUser = decodeURIComponent(proxyParsed.username);
-  const proxyPass = decodeURIComponent(proxyParsed.password);
-  
-  // Method 1: Try SOCKS5 (Bright Data supports SOCKS5 on port 22225)
-  const socks5Url = `socks5://${encodeURIComponent(proxyUser)}:${encodeURIComponent(proxyPass)}@${proxyHost}:22225`;
-  console.log(`Trying SOCKS5 proxy → ${targetUrl}`);
-  
-  try {
-    const httpClient = Deno.createHttpClient({
-      proxy: { url: socks5Url },
-    });
-    const res = await fetch(targetUrl, {
-      ...options,
-      // @ts-ignore - Deno-specific
-      client: httpClient,
-    });
-    console.log(`SOCKS5 succeeded: ${res.status}`);
-    // Clone and close client
-    const body = await res.text();
-    try { httpClient.close(); } catch {}
-    return new Response(body, { status: res.status, headers: res.headers });
-  } catch (e1) {
-    console.warn(`SOCKS5 failed: ${e1}`);
-  }
-
-  // Method 2: Try HTTP CONNECT proxy (standard tunnel)
-  const httpProxyUrl = `http://${encodeURIComponent(proxyUser)}:${encodeURIComponent(proxyPass)}@${proxyHost}:22225`;
-  console.log(`Trying HTTP proxy → ${targetUrl}`);
-  
-  try {
-    const httpClient = Deno.createHttpClient({
-      proxy: { url: httpProxyUrl },
-    });
-    const res = await fetch(targetUrl, {
-      ...options,
-      // @ts-ignore - Deno-specific
-      client: httpClient,
-    });
-    console.log(`HTTP proxy succeeded: ${res.status}`);
-    const body = await res.text();
-    try { httpClient.close(); } catch {}
-    return new Response(body, { status: res.status, headers: res.headers });
-  } catch (e2) {
-    console.warn(`HTTP proxy failed: ${e2}`);
-  }
-
-  // Method 3: Manual CONNECT tunnel on port 33335 with CA cert
-  console.log(`Trying manual CONNECT tunnel → ${targetUrl}`);
-  const targetParsed = new URL(targetUrl);
-  const targetHost = targetParsed.hostname;
-  const targetPort = parseInt(targetParsed.port || "443");
-  const caCerts = getBrightDataCACerts();
-  
-  const encoder = new TextEncoder();
-  const decoder = new TextDecoder();
-  
-  const tcpConn = await Deno.connect({ hostname: proxyHost, port: 33335 });
-  const authB64 = btoa(`${proxyUser}:${proxyPass}`);
-  const connectReq = `CONNECT ${targetHost}:${targetPort} HTTP/1.1\r\nHost: ${targetHost}:${targetPort}\r\nProxy-Authorization: Basic ${authB64}\r\n\r\n`;
-  await tcpConn.write(encoder.encode(connectReq));
-  
-  const buf = new Uint8Array(4096);
-  const n = await tcpConn.read(buf);
-  if (n === null) { tcpConn.close(); throw new Error("Proxy closed connection"); }
-  const connectResponse = decoder.decode(buf.subarray(0, n));
-  console.log(`CONNECT response: ${connectResponse.trim().split('\r\n')[0]}`);
-  if (!connectResponse.includes("200")) { tcpConn.close(); throw new Error(`CONNECT failed: ${connectResponse.trim().split('\r\n')[0]}`); }
-  
-  const tlsOpts: any = { hostname: targetHost };
-  if (caCerts.length > 0) tlsOpts.caCerts = caCerts;
-  const tlsConn = await Deno.startTls(tcpConn, tlsOpts);
+  const apiKey = Deno.env.get("BRIGHTDATA_API_KEY");
+  if (!apiKey) throw new Error("BRIGHTDATA_API_KEY not configured");
   
   const method = options.method || "GET";
-  const path = targetParsed.pathname + targetParsed.search;
+  const body = options.body ? (typeof options.body === "string" ? options.body : JSON.stringify(options.body)) : undefined;
+  
+  // Build headers to forward (filter out host/connection headers)
+  const forwardHeaders: Record<string, string> = {};
   const hdrs = new Headers(options.headers as HeadersInit);
-  hdrs.set("Host", targetHost);
-  if (!hdrs.has("Content-Type")) hdrs.set("Content-Type", "application/json");
-  hdrs.set("Connection", "close");
-  
-  let httpReq = `${method} ${path} HTTP/1.1\r\n`;
-  hdrs.forEach((v, k) => { httpReq += `${k}: ${v}\r\n`; });
-  
-  const bodyStr = options.body ? (typeof options.body === "string" ? options.body : JSON.stringify(options.body)) : "";
-  if (bodyStr) httpReq += `Content-Length: ${encoder.encode(bodyStr).length}\r\n`;
-  httpReq += `\r\n`;
-  if (bodyStr) httpReq += bodyStr;
-  
-  await tlsConn.write(encoder.encode(httpReq));
-  
-  const chunks: Uint8Array[] = [];
-  try {
-    while (true) {
-      const chunk = new Uint8Array(8192);
-      const bytesRead = await tlsConn.read(chunk);
-      if (bytesRead === null) break;
-      chunks.push(chunk.subarray(0, bytesRead));
+  hdrs.forEach((v, k) => {
+    const lower = k.toLowerCase();
+    if (lower !== "host" && lower !== "connection") {
+      forwardHeaders[k] = v;
     }
-  } catch (readErr) {
-    if (chunks.length === 0) throw readErr;
-  }
-  try { tlsConn.close(); } catch {}
+  });
   
-  const totalLen = chunks.reduce((s, c) => s + c.length, 0);
-  const fullBuf = new Uint8Array(totalLen);
-  let offset = 0;
-  for (const c of chunks) { fullBuf.set(c, offset); offset += c.length; }
+  const requestBody: any = {
+    zone: "web_unlocker1",
+    url: targetUrl,
+    method,
+    format: "raw",
+  };
   
-  const fullResponse = decoder.decode(fullBuf);
-  const headerEnd = fullResponse.indexOf("\r\n\r\n");
-  const statusLine = fullResponse.split("\r\n")[0];
-  const statusMatch = statusLine.match(/HTTP\/\d\.?\d?\s+(\d+)/);
-  const status = statusMatch ? parseInt(statusMatch[1]) : 500;
-  
-  const headersSection = fullResponse.substring(0, headerEnd);
-  let responseBody: string;
-  if (headersSection.toLowerCase().includes("transfer-encoding: chunked")) {
-    responseBody = parseChunkedBody(fullResponse.substring(headerEnd + 4));
-  } else {
-    responseBody = fullResponse.substring(headerEnd + 4);
+  // Add headers if present
+  if (Object.keys(forwardHeaders).length > 0) {
+    requestBody.headers = forwardHeaders;
   }
   
-  console.log(`Manual tunnel response: ${status} (${responseBody.length} chars)`);
-  return new Response(responseBody, { status, headers: { "Content-Type": "application/json" } });
+  // Add body if present
+  if (body) {
+    requestBody.body = body;
+  }
+  
+  console.log(`Web Unlocker: ${method} ${targetUrl}`);
+  
+  const res = await fetch("https://api.brightdata.com/request", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify(requestBody),
+  });
+  
+  const responseBody = await res.text();
+  console.log(`Web Unlocker response [${res.status}]: ${responseBody.substring(0, 300)}`);
+  
+  return new Response(responseBody, {
+    status: res.status,
+    headers: { "Content-Type": "application/json" },
+  });
 }
 
 // Parse HTTP chunked transfer encoding
