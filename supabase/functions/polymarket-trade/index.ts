@@ -11,124 +11,74 @@ const corsHeaders = {
 
 const CLOB_HOST = "https://clob.polymarket.com";
 
-// Fetch via HTTP CONNECT proxy (Bright Data ISP)
-// Uses Deno.createHttpClient if available, falls back to CONNECT tunnel
+// Bright Data CA certificates for SSL proxy connections
+const BRIGHTDATA_CA_CERTS = [
+  // Old cert (luminati.io) - works with port 22225, may work with 33335
+  `-----BEGIN CERTIFICATE-----
+MIIFozCCA4ugAwIBAgIJAPnnIqmvvTArMA0GCSqGSIb3DQEBBQUAMD8xCzAJBgNV
+BAYTAklMMQswCQYDVQQIEwJJTDENMAsGA1UEChMESG9sYTEUMBIGA1UEAxMLbHVt
+aW5hdGkuaW8wHhcNMTYwOTI3MTQyODM4WhcNMjYwOTI1MTQyODM4WjA/MQswCQYD
+VQQGEwJJTDELMAkGA1UECBMCSUwxDTALBgNVBAoTBEhvbGExFDASBgNVBAMTC2x1
+bWluYXRpLmlvMIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEAtiqw0DuX
+g5g7BC+Cr7mZvgXB7CsJ10YFb2xwoDZlHHJ8G0KEMUeNiY9EjPR8ZIHlnjGJehsW
+PUvJeSAoDnT+fh4udWyUJ3VSqDTyGpu4DpfLBwaaZP/fq45UeR0oLs3ZJd6joDss
+AjJdQbdBPJj/57MjwbF+jddP6qm9XbCWjYzl1uxdMVjloetyRUgkhkh2ALp/VtK8
+hUj/XgvD/Y1souKYs5DKayJTn+GM6MlSOUBQ0+b8yUbDb/9vjbHlX4pZ8gbgSEFf
+xUV49Sxd6EhRXzFw4TERQVut0cgojmRmrgXXwc4kJi0Uvtc6tV/hJeH2yRS84Ehg
+feY5dcJVc69ILYfGrNmwbFvf5aHZPWFG0kIcy9iMMk+3wSUaBP+FAYyd0i+PJTxy
+5Jfmhs6BHowuEr0zgL+xge+/RCEbVUPvA6w9DWYbpqckZUh9sPga3JcHjaHGs6Cz
+dnjEShgmlBm0DL6JMumLWFJrjztsm56Huuai0F5pwyrsyq8fbK6Sp18sq5/vH3Vy
+t2XAj4EIFvpWHZjuocCe5/5vAbkSXjQ5HEIS+SyVhlFriCy5Mf3fTyMFqwm3tbZv
+jEooumi0/9F2WvisUgheC1uatZ8M+Pzi+Kp3x2SSS992KWs0M35GEstiB09RkNHe
+GItI6qxqY/Npw5u6lBE6Z28ISwvuet1a4vMCAwEAAaOBoTCBnjAdBgNVHQ4EFgQU
+Wq7PsMnq2tuDhTV0oUW4jjzvLTcwbwYDVR0jBGgwZoAUWq7PsMnq2tuDhTV0oUW4
+jjzvLTehQ6RBMD8xCzAJBgNVBAYTAklMMQswCQYDVQQIEwJJTDENMAsGA1UEChME
+SG9sYTEUMBIGA1UEAxMLbHVtaW5hdGkuaW+CCQD55yKpr70wKzAMBgNVHRMEBTAD
+AQH/MA0GCSqGSIb3DQEBBQUAA4ICAQA3oT4lrUErSqXjQtDUINo62KcJWs4kjEd8
+qXZdl/HVim06nOG6DFZCSh8JngFi4MFmSzGlBGxe1pXaYArtekfLWmhwoVoJiiaA
+DAAPItcZNlA9zIORyLZlrXlIuP5xzsb9PbnNWhd9xJHksHGoHDPHAW/KI/GJdjQv
+uuCyObvv1IgGvfHbv4lXGCwQuU0OBGXv1kfZtAqUS+ei5zkK+nY0qc3L3Ce+Ow6h
+/haDe0FDoT7zkwnEHu/ExCGSR3lNnyBAewlPVMzbJznuPMU3FFA3MHT7IcHxJWff
+r8jOXo3qXWqd+T2oDO02KUR2ZVolI8FGx6yIKfLwWnj+eR2dfdMx0tUX4F6mRi4N
+zGmhhIIHtViAMf59tBL7az26C8DGfX0p4oECpKtc86u5bYTbRZ1xrf6t/wFqqgB/
+RVqn9IhSfXNZtxBn8G0odR8sPIiBxJKvkLMDKoAEeErwd0yqnr8FplskFuPn0FY5
+N7n7dj5cHoSUtSAkM6bHCFY+XVtUoy6xisTAobajHvU3e2cDVKizC/ocUbHbTJgh
+nevnzyTtKL2w820PDmI7plFN3wR3epd4kTAP5KT196Pjwjg+Dqgt2OnGAafKr+Qr
+o2cdIF5MbULVkux4RKzpNKaoDtrnvC1jROM5s1R0Lb96dQcS/VwmyX22lKdbbY9F
+ij5GZar9JA==
+-----END CERTIFICATE-----`,
+];
+
+// Fetch via HTTP proxy (Bright Data residential/ISP)
 async function fetchViaProxy(
   proxyUrl: string,
   targetUrl: string,
   options: RequestInit,
 ): Promise<Response> {
-  // Try Deno.createHttpClient first (stable in Deno 2.x)
-  if (typeof Deno.createHttpClient === "function") {
-    console.log("Using Deno.createHttpClient for proxy");
-    const httpClient = Deno.createHttpClient({
-      proxy: { url: proxyUrl },
-    });
-    try {
-      const res = await fetch(targetUrl, {
-        ...options,
-        // @ts-ignore - Deno-specific
-        client: httpClient,
-      });
-      return res;
-    } finally {
-      try { httpClient.close(); } catch {}
-    }
+  // Use Deno.createHttpClient with Bright Data CA cert
+  // Force port 22225 (old cert) if URL has port 33335 (new cert not available)
+  let effectiveProxyUrl = proxyUrl;
+  if (proxyUrl.includes(":33335")) {
+    effectiveProxyUrl = proxyUrl.replace(":33335", ":22225");
+    console.log("Switched to port 22225 (old SSL cert)");
   }
-
-  // Fallback: manual CONNECT tunnel
-  console.log("Deno.createHttpClient unavailable, using CONNECT tunnel");
-  const parsed = new URL(proxyUrl);
-  const proxyHost = parsed.hostname;
-  const proxyPort = parseInt(parsed.port || "33335");
-  const proxyAuth = parsed.username && parsed.password
-    ? btoa(`${decodeURIComponent(parsed.username)}:${decodeURIComponent(parsed.password)}`)
-    : null;
-
-  const target = new URL(targetUrl);
-  const targetHost = target.hostname;
-  const targetPort = parseInt(target.port || "443");
-
-  // Step 1: TCP connect to proxy
-  const conn = await Deno.connect({ hostname: proxyHost, port: proxyPort });
-
-  // Step 2: Send CONNECT request
-  const connectReq = [
-    `CONNECT ${targetHost}:${targetPort} HTTP/1.1`,
-    `Host: ${targetHost}:${targetPort}`,
-    ...(proxyAuth ? [`Proxy-Authorization: Basic ${proxyAuth}`] : []),
-    "",
-    "",
-  ].join("\r\n");
-
-  await conn.write(new TextEncoder().encode(connectReq));
-
-  // Step 3: Read CONNECT response
-  const buf = new Uint8Array(4096);
-  const n = await conn.read(buf);
-  const connectResponse = new TextDecoder().decode(buf.subarray(0, n || 0));
-  if (!connectResponse.includes("200")) {
-    conn.close();
-    throw new Error(`CONNECT failed: ${connectResponse.trim()}`);
-  }
-
-  // Step 4: Upgrade to TLS
-  const tlsConn = await Deno.startTls(conn, { hostname: targetHost });
-
-  // Step 5: Send HTTP request over TLS tunnel
-  const method = options.method || "GET";
-  const headers = options.headers as Record<string, string> || {};
-  const body = options.body as string || "";
-  const path = target.pathname + target.search;
-
-  const httpReq = [
-    `${method} ${path} HTTP/1.1`,
-    `Host: ${targetHost}`,
-    ...Object.entries(headers).map(([k, v]) => `${k}: ${v}`),
-    ...(body ? [`Content-Length: ${new TextEncoder().encode(body).length}`] : []),
-    "",
-    "",
-  ].join("\r\n") + body;
-
-  await tlsConn.write(new TextEncoder().encode(httpReq));
-
-  // Step 6: Read response
-  const respBuf = new Uint8Array(65536);
-  let totalRead = 0;
-  const chunks: Uint8Array[] = [];
+  console.log("Using Deno.createHttpClient for proxy");
+  const httpClient = Deno.createHttpClient({
+    proxy: { url: effectiveProxyUrl },
+    caCerts: BRIGHTDATA_CA_CERTS,
+  });
   try {
-    while (true) {
-      const rn = await tlsConn.read(respBuf);
-      if (rn === null) break;
-      chunks.push(respBuf.slice(0, rn));
-      totalRead += rn;
-      // Check if we have the full response (simple heuristic)
-      const partial = new TextDecoder().decode(new Uint8Array(chunks.flatMap(c => [...c])));
-      if (partial.includes("\r\n\r\n")) {
-        // Check content-length or chunked encoding
-        const headerEnd = partial.indexOf("\r\n\r\n");
-        const headerSection = partial.substring(0, headerEnd);
-        const clMatch = headerSection.match(/content-length:\s*(\d+)/i);
-        if (clMatch) {
-          const cl = parseInt(clMatch[1]);
-          const bodyReceived = new TextEncoder().encode(partial.substring(headerEnd + 4)).length;
-          if (bodyReceived >= cl) break;
-        } else if (partial.endsWith("\r\n0\r\n\r\n")) {
-          break; // Chunked transfer complete
-        }
-      }
-    }
-  } catch {}
-  tlsConn.close();
-
-  const fullResp = new TextDecoder().decode(new Uint8Array(chunks.flatMap(c => [...c])));
-  const headerEnd = fullResp.indexOf("\r\n\r\n");
-  const statusLine = fullResp.substring(0, fullResp.indexOf("\r\n"));
-  const statusCode = parseInt(statusLine.split(" ")[1] || "500");
-  const respBody = fullResp.substring(headerEnd + 4);
-
-  return new Response(respBody, { status: statusCode });
+    const res = await fetch(targetUrl, {
+      ...options,
+      // @ts-ignore - Deno-specific
+      client: httpClient,
+    });
+    return res;
+  } finally {
+    try { httpClient.close(); } catch {}
+  }
 }
+
 
 async function getL2Headers(
   apiKey: string,
