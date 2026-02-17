@@ -98,7 +98,8 @@ async function signAndSubmitOrder(
   tokenId: string, side: "BUY" | "SELL", size: number, price: number, _negRisk = false,
   _storedCreds?: { apiKey: string; secret: string; passphrase: string },
 ): Promise<any> {
-  const RELAY_URL = Deno.env.get("RELAY_SERVER_URL") || "https://polymarket-kit-production.up.railway.app";
+  let RELAY_URL = Deno.env.get("RELAY_SERVER_URL") || "https://polymarket-kit-production.up.railway.app";
+  if (RELAY_URL && !RELAY_URL.startsWith("http")) RELAY_URL = `https://${RELAY_URL}`;
   const RELAY_SECRET = Deno.env.get("RELAY_SECRET") || "";
 
   console.log(`Submitting trade to relay: ${side} $${size} of ${tokenId.substring(0, 20)}... @ $${price}`);
@@ -340,7 +341,8 @@ serve(async (req) => {
 
       case "test-proxy": {
         const results: any[] = [];
-        const RELAY_URL = Deno.env.get("RELAY_SERVER_URL") || "https://polymarket-kit-production.up.railway.app";
+        let RELAY_URL = Deno.env.get("RELAY_SERVER_URL") || "https://polymarket-kit-production.up.railway.app";
+        if (RELAY_URL && !RELAY_URL.startsWith("http")) RELAY_URL = `https://${RELAY_URL}`;
 
         // Test relay health
         try {
