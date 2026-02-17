@@ -11,45 +11,6 @@ const corsHeaders = {
 
 const CLOB_HOST = "https://clob.polymarket.com";
 
-// ── Bright Data Web Unlocker ──
-async function fetchViaProxy(targetUrl: string, options: RequestInit): Promise<Response> {
-  const apiKey = Deno.env.get("BRIGHTDATA_API_KEY");
-  if (!apiKey) throw new Error("BRIGHTDATA_API_KEY not configured");
-
-  const method = options.method || "GET";
-  const body = options.body
-    ? typeof options.body === "string" ? options.body : JSON.stringify(options.body)
-    : undefined;
-
-  const forwardHeaders: Record<string, string> = {};
-  const hdrs = new Headers(options.headers as HeadersInit);
-  hdrs.forEach((v, k) => {
-    const lower = k.toLowerCase();
-    if (lower !== "host" && lower !== "connection") forwardHeaders[k] = v;
-  });
-
-  const requestBody: any = {
-    zone: "web_unlocker1",
-    url: targetUrl,
-    method,
-    format: "raw",
-    country: "us",
-  };
-  if (Object.keys(forwardHeaders).length > 0) requestBody.headers = forwardHeaders;
-  if (body) requestBody.body = body;
-
-  console.log(`WebUnlocker: ${method} ${targetUrl} (body=${body?.length || 0} bytes)`);
-  const res = await fetch("https://api.brightdata.com/request", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
-    body: JSON.stringify(requestBody),
-  });
-
-  const responseBody = await res.text();
-  console.log(`WebUnlocker [${res.status}] (${responseBody.length} bytes): ${responseBody.substring(0, 500)}`);
-  return new Response(responseBody, { status: res.status, headers: { "Content-Type": "application/json" } });
-}
-
 // ── L2 HMAC Auth Headers ──
 async function getL2Headers(
   apiKey: string, secret: string, passphrase: string, timestamp: number,
@@ -131,7 +92,7 @@ async function getWalletBalance(walletAddress: string): Promise<{ usdc: number; 
   return { usdc: totalUsdc, matic };
 }
 
-// ── Sign & Submit Order (via Web Unlocker) ──
+// ── Sign & Submit Order (via Railway Relay) ──
 async function signAndSubmitOrder(
   walletPrivateKey: string, proxyAddress: string | undefined,
   tokenId: string, side: "BUY" | "SELL", size: number, price: number, negRisk = false,
@@ -186,7 +147,7 @@ async function signAndSubmitOrder(
       { tickSize, negRisk },
     );
 
-    console.log("Order signed, submitting to CLOB via US proxy…");
+    console.log("Order signed, submitting via Railway relay…");
 
     // Step 5: Submit via US relay server to bypass geoblocking
     const timestamp = Math.floor(Date.now() / 1000);
@@ -454,54 +415,16 @@ serve(async (req) => {
 
       case "test-proxy": {
         const results: any[] = [];
-        const usProxyUrl2 = Deno.env.get("US_PROXY_URL");
-        const caCert2 = Deno.env.get("BRIGHTDATA_CA_CERT");
+        const RELAY_URL = Deno.env.get("RELAY_SERVER_URL") || "https://polymarket-kit-production.up.railway.app";
 
-        if (usProxyUrl2) {
-          const pu = new URL(usProxyUrl2);
-          const un = decodeURIComponent(pu.username);
-          const pw = decodeURIComponent(pu.password);
-          let cert2: string | undefined;
-          if (caCert2) {
-            let cb = caCert2.replace(/-----BEGIN CERTIFICATE-----/g, "").replace(/-----END CERTIFICATE-----/g, "").replace(/\s+/g, "");
-            const ls: string[] = [];
-            for (let i = 0; i < cb.length; i += 64) ls.push(cb.substring(i, i + 64));
-            cert2 = `-----BEGIN CERTIFICATE-----\n${ls.join("\n")}\n-----END CERTIFICATE-----`;
-          }
-
-          // Test proxy to HTTP endpoint (no CONNECT needed)
-          for (const port of ["33335", "22225"]) {
-            try {
-              const co: any = { proxy: { url: `http://${pu.hostname}:${port}`, basicAuth: { username: un, password: pw } } };
-              if (port === "33335" && cert2) co.caCerts = [cert2];
-              const hc = Deno.createHttpClient(co);
-              const r = await fetch("http://lumtest.com/myip.json", { client: hc } as any);
-              const b = await r.text();
-              results.push({ test: `proxy-${port} HTTP lumtest`, status: r.status, body: b.substring(0, 200) });
-            } catch (e) { results.push({ test: `proxy-${port} HTTP lumtest`, error: String(e) }); }
-          }
-
-          // Test proxy to HTTPS endpoint (requires CONNECT tunnel)
-          for (const port of ["33335", "22225"]) {
-            try {
-              const co: any = { proxy: { url: `http://${pu.hostname}:${port}`, basicAuth: { username: un, password: pw } } };
-              if (port === "33335" && cert2) co.caCerts = [cert2];
-              const hc = Deno.createHttpClient(co);
-              const r = await fetch(`${CLOB_HOST}/time`, { client: hc } as any);
-              const b = await r.text();
-              results.push({ test: `proxy-${port} HTTPS /time`, status: r.status, body: b.substring(0, 200) });
-            } catch (e) { results.push({ test: `proxy-${port} HTTPS /time`, error: String(e) }); }
-          }
-        }
-
-        // Web Unlocker GET (known working)
+        // Test relay health
         try {
-          const r = await fetchViaProxy(`${CLOB_HOST}/time`, { method: "GET" });
+          const r = await fetch(`${RELAY_URL}/health`);
           const b = await r.text();
-          results.push({ test: "WebUnlocker GET /time", status: r.status, body: b.substring(0, 200) });
-        } catch (e) { results.push({ test: "WebUnlocker GET /time", error: String(e) }); }
+          results.push({ test: "relay health", status: r.status, body: b.substring(0, 300) });
+        } catch (e) { results.push({ test: "relay health", error: String(e) }); }
 
-        // Direct POST /order (check if geoblocked)
+        // Test direct POST /order (check if geoblocked)
         if (POLY_API_KEY && POLY_SECRET && POLY_PASSPHRASE) {
           try {
             const ts = Math.floor(Date.now() / 1000);
