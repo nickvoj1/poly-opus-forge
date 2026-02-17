@@ -224,64 +224,86 @@ async function signAndSubmitOrder(
         console.log("CA cert fixed, length:", fixedCert.length);
       }
 
-      // Try SOCKS5 proxy first (port 22225), then HTTP CONNECT as fallback
+      // SSL interception via Bright Data port 33335
+      // Bright Data blocks CONNECT to polymarket, so use their SSL interception mode:
+      // 1. TLS connect to proxy (using their CA cert)
+      // 2. Send regular HTTP request inside TLS (proxy forwards to target)
       let success = false;
-      const attempts = [
-        { port: "22225", transport: "socks5" as const },
-        { port: "22225", transport: "http" as const },
-        { port: "33335", transport: "http" as const },
-      ];
-      for (const { port, transport } of attempts) {
-        try {
-          const label = `${transport}-${port}`;
-          console.log(`Trying ${transport}://${baseHost}:${port}…`);
-          const clientOpts: any = {
-            proxy: {
-              transport,
-              url: `${transport}://${baseHost}:${port}`,
-              basicAuth: { username, password },
-            },
-          };
-          if (transport === "http" && port === "33335" && fixedCert) {
-            clientOpts.caCerts = [fixedCert];
-          }
 
-          const httpClient = Deno.createHttpClient(clientOpts);
-          submitRes = await fetch(`${CLOB_HOST}/order`, {
-            method: "POST",
-            headers: { ...l2Headers, "Content-Type": "application/json" },
-            body: orderBody,
-            // @ts-ignore Deno-specific
-            client: httpClient,
-          });
-          submitBody = await submitRes.text();
-          via = label;
-          console.log(`${via} [${submitRes.status}]: ${submitBody.substring(0, 500)}`);
-          success = true;
-          break;
-        } catch (err) {
-          console.error(`${transport}-${port} failed: ${err}`);
-        }
-      }
+      try {
+        console.log(`SSL interception via ${baseHost}:33335…`);
 
-      if (!success) {
-        console.log("HTTP proxy failed, trying Web Unlocker API…");
-        try {
-          submitRes = await fetchViaProxy(`${CLOB_HOST}/order`, {
-            method: "POST",
-            headers: { ...l2Headers, "Content-Type": "application/json" },
-            body: orderBody,
-          });
-          submitBody = await submitRes.text();
-          via = "web-unlocker";
-          if (submitBody.trim()) {
-            success = true;
-          } else {
-            console.error("Web Unlocker returned empty body");
-          }
-        } catch (wuErr) {
-          console.error(`Web Unlocker also failed: ${wuErr}`);
+        // 1. TCP connect to proxy
+        const conn = await Deno.connect({ hostname: baseHost, port: 33335 });
+
+        // 2. Upgrade to TLS with proxy's cert (SSL interception)
+        const tlsConn = await Deno.startTls(conn, {
+          hostname: baseHost,
+          caCerts: fixedCert ? [fixedCert] : undefined,
+        });
+
+        // 3. Send HTTP request with proxy auth (full URL in request line)
+        const authB64 = btoa(`${username}:${password}`);
+        const allHeaders = {
+          ...l2Headers,
+          "Content-Type": "application/json",
+          "Host": "clob.polymarket.com",
+          "Content-Length": `${orderBody.length}`,
+          "Proxy-Authorization": `Basic ${authB64}`,
+          "Connection": "close",
+        };
+        const headerLines = Object.entries(allHeaders).map(([k, v]) => `${k}: ${v}`).join("\r\n");
+        const httpReq = `POST https://clob.polymarket.com/order HTTP/1.1\r\n${headerLines}\r\n\r\n${orderBody}`;
+
+        await tlsConn.write(new TextEncoder().encode(httpReq));
+
+        // 4. Read response
+        const chunks: Uint8Array[] = [];
+        let totalLen = 0;
+        while (true) {
+          const readBuf = new Uint8Array(8192);
+          const bytesRead = await tlsConn.read(readBuf);
+          if (bytesRead === null) break;
+          chunks.push(readBuf.subarray(0, bytesRead));
+          totalLen += bytesRead;
         }
+        tlsConn.close();
+
+        // Concatenate chunks
+        const fullBuf = new Uint8Array(totalLen);
+        let offset = 0;
+        for (const c of chunks) { fullBuf.set(c, offset); offset += c.length; }
+        const fullResponse = new TextDecoder().decode(fullBuf);
+
+        // Parse HTTP response
+        const headerEnd = fullResponse.indexOf("\r\n\r\n");
+        const head = fullResponse.substring(0, headerEnd);
+        const statusLine = head.split("\r\n")[0];
+        const statusCode = parseInt(statusLine.split(" ")[1] || "0");
+        let respBody = fullResponse.substring(headerEnd + 4);
+
+        // Handle chunked transfer encoding
+        if (head.toLowerCase().includes("transfer-encoding: chunked") && respBody) {
+          const decoded: string[] = [];
+          let remaining = respBody;
+          while (remaining.length > 0) {
+            const nlIdx = remaining.indexOf("\r\n");
+            if (nlIdx === -1) break;
+            const chunkSize = parseInt(remaining.substring(0, nlIdx), 16);
+            if (chunkSize === 0 || isNaN(chunkSize)) break;
+            decoded.push(remaining.substring(nlIdx + 2, nlIdx + 2 + chunkSize));
+            remaining = remaining.substring(nlIdx + 2 + chunkSize + 2);
+          }
+          respBody = decoded.join("");
+        }
+
+        console.log(`SSL interception [${statusCode}]: ${respBody.substring(0, 500)}`);
+        submitRes = new Response(respBody, { status: statusCode });
+        submitBody = respBody;
+        via = "ssl-interception-33335";
+        if (statusCode !== 403) success = true;
+      } catch (err) {
+        console.error(`SSL interception failed: ${err}`);
       }
 
       if (!success) {
@@ -513,6 +535,73 @@ serve(async (req) => {
           }
           return json({ authAddress, eoaAddress: wallet.address, proxyAddress: proxyAddr, apiKey: result.apiKey, secret: result.secret, passphrase: result.passphrase });
         } catch (e) { return json({ error: e instanceof Error ? e.message : "Unknown error" }, 500); }
+      }
+
+      case "test-proxy": {
+        const results: any[] = [];
+        const usProxyUrl2 = Deno.env.get("US_PROXY_URL");
+        const caCert2 = Deno.env.get("BRIGHTDATA_CA_CERT");
+
+        if (usProxyUrl2) {
+          const pu = new URL(usProxyUrl2);
+          const un = decodeURIComponent(pu.username);
+          const pw = decodeURIComponent(pu.password);
+          let cert2: string | undefined;
+          if (caCert2) {
+            let cb = caCert2.replace(/-----BEGIN CERTIFICATE-----/g, "").replace(/-----END CERTIFICATE-----/g, "").replace(/\s+/g, "");
+            const ls: string[] = [];
+            for (let i = 0; i < cb.length; i += 64) ls.push(cb.substring(i, i + 64));
+            cert2 = `-----BEGIN CERTIFICATE-----\n${ls.join("\n")}\n-----END CERTIFICATE-----`;
+          }
+
+          // Test proxy to HTTP endpoint (no CONNECT needed)
+          for (const port of ["33335", "22225"]) {
+            try {
+              const co: any = { proxy: { url: `http://${pu.hostname}:${port}`, basicAuth: { username: un, password: pw } } };
+              if (port === "33335" && cert2) co.caCerts = [cert2];
+              const hc = Deno.createHttpClient(co);
+              const r = await fetch("http://lumtest.com/myip.json", { client: hc } as any);
+              const b = await r.text();
+              results.push({ test: `proxy-${port} HTTP lumtest`, status: r.status, body: b.substring(0, 200) });
+            } catch (e) { results.push({ test: `proxy-${port} HTTP lumtest`, error: String(e) }); }
+          }
+
+          // Test proxy to HTTPS endpoint (requires CONNECT tunnel)
+          for (const port of ["33335", "22225"]) {
+            try {
+              const co: any = { proxy: { url: `http://${pu.hostname}:${port}`, basicAuth: { username: un, password: pw } } };
+              if (port === "33335" && cert2) co.caCerts = [cert2];
+              const hc = Deno.createHttpClient(co);
+              const r = await fetch(`${CLOB_HOST}/time`, { client: hc } as any);
+              const b = await r.text();
+              results.push({ test: `proxy-${port} HTTPS /time`, status: r.status, body: b.substring(0, 200) });
+            } catch (e) { results.push({ test: `proxy-${port} HTTPS /time`, error: String(e) }); }
+          }
+        }
+
+        // Web Unlocker GET (known working)
+        try {
+          const r = await fetchViaProxy(`${CLOB_HOST}/time`, { method: "GET" });
+          const b = await r.text();
+          results.push({ test: "WebUnlocker GET /time", status: r.status, body: b.substring(0, 200) });
+        } catch (e) { results.push({ test: "WebUnlocker GET /time", error: String(e) }); }
+
+        // Direct POST /order (check if geoblocked)
+        if (POLY_API_KEY && POLY_SECRET && POLY_PASSPHRASE) {
+          try {
+            const ts = Math.floor(Date.now() / 1000);
+            const h = await getL2Headers(POLY_API_KEY, POLY_SECRET, POLY_PASSPHRASE, ts, "POST", "/order", "{}", clobAuthAddress);
+            const r = await fetch(`${CLOB_HOST}/order`, {
+              method: "POST",
+              headers: { ...h, "Content-Type": "application/json" },
+              body: "{}",
+            });
+            const b = await r.text();
+            results.push({ test: "direct POST /order", status: r.status, body: b.substring(0, 300) });
+          } catch (e) { results.push({ test: "direct POST /order", error: String(e) }); }
+        }
+
+        return json({ results });
       }
 
       default:
