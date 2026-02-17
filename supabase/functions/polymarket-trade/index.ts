@@ -180,30 +180,100 @@ async function signAndSubmitOrder(
       { tickSize, negRisk },
     );
 
-    console.log("Order signed, submitting via Web Unlocker…");
+    console.log("Order signed, submitting to CLOB via US proxy…");
 
-    // Step 5: Submit via Bright Data Web Unlocker
+    // Step 5: Submit via US residential proxy to bypass geoblocking
     const timestamp = Math.floor(Date.now() / 1000);
     const orderBody = JSON.stringify(signedOrder);
     const l2Headers = await getL2Headers(creds.apiKey, creds.secret, creds.passphrase, timestamp, "POST", "/order", orderBody, wallet.address);
 
-    const proxyRes = await fetchViaProxy(`${CLOB_HOST}/order`, {
-      method: "POST",
-      headers: { ...l2Headers, "Content-Type": "application/json" },
-      body: orderBody,
-    });
+    const usProxyUrl = Deno.env.get("US_PROXY_URL");
+    const caCert = Deno.env.get("BRIGHTDATA_CA_CERT");
+    let submitRes: Response;
+    let submitBody: string;
+    let via = "direct";
 
-    const proxyBody = await proxyRes.text();
-    console.log(`Submit response [${proxyRes.status}]: ${proxyBody.substring(0, 500)}`);
+    if (usProxyUrl) {
+      const proxyUrl = new URL(usProxyUrl);
+      const username = decodeURIComponent(proxyUrl.username);
+      const password = decodeURIComponent(proxyUrl.password);
+      const baseHost = proxyUrl.hostname;
 
-    if (proxyRes.ok) {
-      let result;
-      try { result = JSON.parse(proxyBody); } catch { result = proxyBody; }
-      console.log(`Order submitted → ID: ${result?.orderID || result?.order_id || "?"}`);
-      return { submitted: true, result, finalPrice, tickSize, via: "web-unlocker" };
+      // Fix CA cert format: the secret may have spaces instead of newlines
+      let fixedCert: string | undefined;
+      if (caCert) {
+        // Reconstruct proper PEM format
+        let certBody = caCert
+          .replace(/-----BEGIN CERTIFICATE-----/g, "")
+          .replace(/-----END CERTIFICATE-----/g, "")
+          .replace(/\s+/g, "");
+        // Split into 64-char lines
+        const lines: string[] = [];
+        for (let i = 0; i < certBody.length; i += 64) {
+          lines.push(certBody.substring(i, i + 64));
+        }
+        fixedCert = `-----BEGIN CERTIFICATE-----\n${lines.join("\n")}\n-----END CERTIFICATE-----`;
+        console.log("CA cert fixed, length:", fixedCert.length);
+      }
+
+      // Try port 33335 with SSL interception (CA cert required)
+      let success = false;
+      const ports = ["33335", "22225"];
+      for (const port of ports) {
+        try {
+          const proxyHostUrl = `http://${baseHost}:${port}`;
+          const clientOpts: any = {
+            proxy: { url: proxyHostUrl, basicAuth: { username, password } },
+          };
+          if (port === "33335" && fixedCert) clientOpts.caCerts = [fixedCert];
+
+          console.log(`Trying proxy ${baseHost}:${port}…`);
+          const httpClient = Deno.createHttpClient(clientOpts);
+          submitRes = await fetch(`${CLOB_HOST}/order`, {
+            method: "POST",
+            headers: { ...l2Headers, "Content-Type": "application/json" },
+            body: orderBody,
+            // @ts-ignore Deno-specific
+            client: httpClient,
+          });
+          submitBody = await submitRes.text();
+          via = `proxy-${port}`;
+          console.log(`${via} [${submitRes.status}]: ${submitBody.substring(0, 500)}`);
+          success = true;
+          break;
+        } catch (err) {
+          console.error(`proxy-${port} failed: ${err}`);
+        }
+      }
+
+      if (!success) {
+        console.error("All proxy attempts failed");
+        return { submitted: false, error: "All proxy attempts failed - geoblocked", signedOrder, finalPrice, tickSize };
+      }
     } else {
-      console.error(`Submit FAILED [${proxyRes.status}]: ${proxyBody.substring(0, 300)}`);
-      return { submitted: false, error: `Polymarket ${proxyRes.status}: ${proxyBody.substring(0, 200)}`, signedOrder, finalPrice, tickSize };
+      submitRes = await fetch(`${CLOB_HOST}/order`, {
+        method: "POST",
+        headers: { ...l2Headers, "Content-Type": "application/json" },
+        body: orderBody,
+      });
+      submitBody = await submitRes.text();
+      console.log(`Direct submit [${submitRes.status}]: ${submitBody.substring(0, 500)}`);
+    }
+
+    if (submitRes!.ok && submitBody!.trim()) {
+      let result;
+      try { result = JSON.parse(submitBody!); } catch { result = submitBody; }
+      const orderId = result?.orderID || result?.order_id;
+      if (orderId) {
+        console.log(`✅ Order submitted → ID: ${orderId} (via ${via})`);
+        return { submitted: true, result, finalPrice, tickSize, via };
+      } else {
+        console.error(`⚠ No orderID in response (via ${via}): ${submitBody!.substring(0, 300)}`);
+        return { submitted: false, error: `No orderID: ${submitBody!.substring(0, 200)}`, signedOrder, finalPrice, tickSize };
+      }
+    } else {
+      console.error(`Submit FAILED [${submitRes!.status}] (${via}): ${submitBody!.substring(0, 300)}`);
+      return { submitted: false, error: `Polymarket ${submitRes!.status}: ${submitBody!.substring(0, 200)}`, signedOrder, finalPrice, tickSize };
     }
   } catch (e) {
     console.error("signAndSubmitOrder error:", e);
