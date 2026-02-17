@@ -28,31 +28,27 @@ function getBrightDataCACerts(): string[] {
   return [pem];
 }
 
-// Fetch via Bright Data residential proxy
-// Strategy: try Deno.createHttpClient with proxy (port 22225, no custom CA needed for standard tunnel)
+// Fetch via Bright Data residential proxy with SSL interception cert
 async function fetchViaProxy(
   proxyUrl: string,
   targetUrl: string,
   options: RequestInit,
 ): Promise<Response> {
-  // Port 22225 uses standard HTTPS tunneling (no custom CA needed)
-  // Port 33335 uses SSL interception (needs CA cert)
+  // Always use port 33335 with CA cert for SSL interception
   let effectiveProxyUrl = proxyUrl;
-  const needsCACert = proxyUrl.includes(":33335");
-  if (!needsCACert && !proxyUrl.includes(":22225")) {
-    effectiveProxyUrl = proxyUrl.replace(/:(\d+)$/, ":22225");
+  if (!proxyUrl.includes(":33335")) {
+    effectiveProxyUrl = proxyUrl.replace(/:(\d+)$/, ":33335");
   }
   
   console.log(`Proxy fetch: ${effectiveProxyUrl.substring(0, 50)}... → ${targetUrl}`);
   
-  const clientOpts: any = {
-    proxy: { url: effectiveProxyUrl },
-  };
-  if (needsCACert) {
-    clientOpts.caCerts = getBrightDataCACerts();
-  }
+  const caCerts = getBrightDataCACerts();
+  console.log(`CA cert loaded: ${caCerts.length > 0 ? 'yes' : 'NO'}, PEM length: ${caCerts[0]?.length || 0}`);
   
-  const httpClient = Deno.createHttpClient(clientOpts);
+  const httpClient = Deno.createHttpClient({
+    proxy: { url: effectiveProxyUrl },
+    caCerts: caCerts,
+  });
   try {
     const res = await fetch(targetUrl, {
       ...options,
