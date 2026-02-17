@@ -114,22 +114,20 @@ const Dashboard = () => {
     } catch {}
   }, [addLog, fetchBets]);
 
-  // Execute trades via polymarket-trade function
-  // Verify trade by signing it (proves order is valid), but don't try to submit
-  // due to Polymarket geoblock on datacenter IPs. Bets are tracked via DB and resolved against real outcomes.
+  // Execute live trades via polymarket-trade → Web Unlocker → Polymarket CLOB
   const executeTrade = useCallback(async (hypo: any) => {
     try {
-      addLog(`🔄 Executing ${hypo.action} on ${hypo.market}...`);
+      addLog(`🔄 ${hypo.action} ${hypo.market}…`);
 
-      let tokenIds: string[] = hypo.clobTokenIds || [];
+      const tokenIds: string[] = hypo.clobTokenIds || [];
       if (tokenIds.length === 0) {
-        addLog(`⚠ No token IDs for ${hypo.market}, tracking as paper trade`);
-        return { status: 'signed', price: hypo.price || 0.5 };
+        addLog(`⚠ No token IDs for ${hypo.market}, skipping`);
+        return { status: 'skipped', price: hypo.price || 0.5 };
       }
 
       const tokenId = hypo.action === "BUY" ? tokenIds[0] : (tokenIds[1] || tokenIds[0]);
 
-      // Get current midpoint price
+      // Get live midpoint price
       let price = hypo.price || 0.5;
       try {
         const { data: priceData } = await supabase.functions.invoke("polymarket-trade", {
@@ -139,39 +137,37 @@ const Dashboard = () => {
         if (mid) price = parseFloat(mid);
       } catch {}
 
-      addLog(`📊 ${hypo.market}: price=$${price.toFixed(4)}, size=${hypo.size}`);
+      addLog(`📊 ${hypo.market}: px=$${price.toFixed(4)}, sz=${hypo.size}`);
 
-      // Sign and attempt submission (via US proxy if configured)
-      try {
-        const { data: result, error: signErr } = await supabase.functions.invoke("polymarket-trade", {
-          body: {
-            action: "sign-order",
-            tokenId,
-            side: hypo.action === "BUY" ? "BUY" : "SELL",
-            size: hypo.size,
-            price,
-          },
-        });
+      const { data: result, error: signErr } = await supabase.functions.invoke("polymarket-trade", {
+        body: {
+          action: "sign-order",
+          tokenId,
+          side: hypo.action === "BUY" ? "BUY" : "SELL",
+          size: hypo.size,
+          price,
+        },
+      });
 
-        if (signErr) {
-          addLog(`⚠ Trade error: ${signErr.message}`);
-        } else if (result?.submitted) {
-          addLog(`✅ REAL TRADE EXECUTED via ${result.via || 'proxy'}: ${hypo.action} ${hypo.size} @ $${result.finalPrice?.toFixed(4)}`);
-          return { status: 'filled', price: result.finalPrice, result: result.result };
-        } else if (result?.signedOrder) {
-          addLog(`📝 Order signed (no proxy). Tracking as paper trade @ $${result.finalPrice?.toFixed(4)}`);
-          return { status: 'signed', price: result.finalPrice || price };
-        } else if (result?.error) {
-          addLog(`⚠ Trade error: ${result.error}`);
-        }
-      } catch (err: any) {
-        addLog(`⚠ Trade failed: ${err.message}`);
+      if (signErr) {
+        addLog(`⚠ Trade error: ${signErr.message}`);
+        return { status: 'failed', price, error: signErr.message };
       }
 
-      return { status: 'signed', price };
+      if (result?.submitted) {
+        addLog(`✅ LIVE TRADE: ${hypo.action} ${hypo.size} @ $${result.finalPrice?.toFixed(4)} via ${result.via}`);
+        return { status: 'filled', price: result.finalPrice, result: result.result };
+      }
+
+      if (result?.error) {
+        addLog(`⚠ ${result.error}`);
+        return { status: 'failed', price, error: result.error };
+      }
+
+      return { status: 'pending', price };
     } catch (e: any) {
-      addLog(`⚠ Trade error: ${e.message}. Tracking as paper trade.`);
-      return { status: 'signed', price: hypo.price || 0.5 };
+      addLog(`⚠ Trade error: ${e.message}`);
+      return { status: 'failed', price: hypo.price || 0.5, error: e.message };
     }
   }, [addLog]);
 
