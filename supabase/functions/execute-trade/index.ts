@@ -67,25 +67,26 @@ serve(async (req) => {
     const funderAddress = PROXY_ADDRESS || eoaAddress;
     const sigType = PROXY_ADDRESS ? 2 : 0; // 2=proxy, 0=EOA
 
-    // Get live price
-    let finalPrice = price;
-    if (!finalPrice) {
-      const mid = await getMidpoint(tokenId);
-      finalPrice = mid ?? 0.5;
+    // Parse + validate/fix Lovable partial payloads
+    const payload = await req.json();
+    const tokenId = payload.tokenId?.toString() || payload.conditionId?.toString();
+    const side = (payload.side || payload.direction)?.toUpperCase();
+    const sizeStr = (payload.size || payload.amount || "0.1").toString();
+    const priceStr = (payload.price || payload.targetPrice || "0.5").toString();
+
+    if (!tokenId || (side !== "BUY" && side !== "SELL") || !sizeStr || !priceStr) {
+      console.log("Bad payload:", JSON.stringify(payload));
+      return json({ error: "Missing: tokenId, side(BUY/SELL), size, price" }, 400);
     }
-    const tickedPrice = Math.round(finalPrice * 100) / 100;
-    const tradeSide = side.toUpperCase() === "BUY" ? Side.BUY : Side.SELL;
+
+    const size = parseFloat(sizeStr);
+    const price = parseFloat(priceStr);
+    const tradeSide = side === "BUY" ? Side.BUY : Side.SELL;
+    const finalPrice = Math.round(price * 100) / 100;
 
     console.log(
-      `execute-trade: ${side.toUpperCase()} ${size} @ $${tickedPrice} token=${tokenId.substring(0, 20)}... sigType=${sigType} funder=${funderAddress.substring(0, 10)}`,
+      `Fixed: ${side} ${size}@${finalPrice} token=${tokenId.slice(0, 10)} wallet=${funderAddress.slice(0, 10)}`,
     );
-
-    // Build L2 credentials object
-    const creds = {
-      key: API_KEY,
-      secret: API_SECRET,
-      passphrase: API_PASSPHRASE,
-    };
 
     // Create ClobClient — points at actual CLOB to build+sign the order
     // The order is then submitted via the relay to avoid geoblocking
