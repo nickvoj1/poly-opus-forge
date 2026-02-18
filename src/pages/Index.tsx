@@ -114,7 +114,7 @@ const Dashboard = () => {
     } catch {}
   }, [addLog, fetchBets]);
 
-  // Execute live trades via polymarket-trade → Web Unlocker → Polymarket CLOB
+  // Execute live trades via execute-trade edge function → Railway relay → Polymarket CLOB
   const executeTrade = useCallback(async (hypo: any) => {
     try {
       addLog(`🔄 ${hypo.action} ${hypo.market}…`);
@@ -126,22 +126,13 @@ const Dashboard = () => {
       }
 
       const tokenId = hypo.action === "BUY" ? tokenIds[0] : (tokenIds[1] || tokenIds[0]);
-
-      // Get live midpoint price
-      let price = hypo.price || 0.5;
-      try {
-        const { data: priceData } = await supabase.functions.invoke("polymarket-trade", {
-          body: { action: "get-prices", tokenIds: [tokenId] },
-        });
-        const mid = priceData?.prices?.[tokenId];
-        if (mid) price = parseFloat(mid);
-      } catch {}
+      const price = hypo.price || 0.5;
 
       addLog(`📊 ${hypo.market}: px=$${price.toFixed(4)}, sz=${hypo.size}`);
 
-      const { data: result, error: signErr } = await supabase.functions.invoke("polymarket-trade", {
+      // Call new execute-trade function → poly-order-relay-production → Polymarket CLOB
+      const { data: result, error: tradeErr } = await supabase.functions.invoke("execute-trade", {
         body: {
-          action: "sign-order",
           tokenId,
           side: hypo.action === "BUY" ? "BUY" : "SELL",
           size: hypo.size,
@@ -149,14 +140,14 @@ const Dashboard = () => {
         },
       });
 
-      if (signErr) {
-        addLog(`⚠ Trade error: ${signErr.message}`);
-        return { status: 'failed', price, error: signErr.message };
+      if (tradeErr) {
+        addLog(`⚠ Trade error: ${tradeErr.message}`);
+        return { status: 'failed', price, error: tradeErr.message };
       }
 
-      if (result?.submitted) {
-        addLog(`✅ LIVE TRADE: ${hypo.action} ${hypo.size} @ $${result.finalPrice?.toFixed(4)} via ${result.via}`);
-        return { status: 'filled', price: result.finalPrice, result: result.result };
+      if (result?.success || result?.submitted) {
+        addLog(`✅ LIVE TRADE: ${hypo.action} ${hypo.size} @ $${result.finalPrice?.toFixed(4)} (ID: ${result.orderId || 'n/a'})`);
+        return { status: 'filled', price: result.finalPrice || price, result };
       }
 
       if (result?.error) {
