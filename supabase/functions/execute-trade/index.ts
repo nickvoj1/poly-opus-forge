@@ -22,7 +22,9 @@ async function getMidpoint(tokenId: string): Promise<number | null> {
     if (!res.ok) return null;
     const data = await res.json();
     return data.mid ? parseFloat(data.mid) : null;
-  } catch { return null; }
+  } catch {
+    return null;
+  }
 }
 
 serve(async (req) => {
@@ -49,7 +51,8 @@ serve(async (req) => {
     const RELAY_SECRET = Deno.env.get("RELAY_SECRET") || "";
 
     if (!PRIVATE_KEY) return json({ error: "POLYMARKET_WALLET_PRIVATE_KEY not configured" }, 400);
-    if (!API_KEY || !API_SECRET || !API_PASSPHRASE) return json({ error: "Polymarket API credentials not configured" }, 400);
+    if (!API_KEY || !API_SECRET || !API_PASSPHRASE)
+      return json({ error: "Polymarket API credentials not configured" }, 400);
 
     // Fix base64 padding
     if (API_SECRET.length % 4 !== 0) {
@@ -73,7 +76,9 @@ serve(async (req) => {
     const tickedPrice = Math.round(finalPrice * 100) / 100;
     const tradeSide = side.toUpperCase() === "BUY" ? Side.BUY : Side.SELL;
 
-    console.log(`execute-trade: ${side.toUpperCase()} ${size} @ $${tickedPrice} token=${tokenId.substring(0, 20)}... sigType=${sigType} funder=${funderAddress.substring(0, 10)}`);
+    console.log(
+      `execute-trade: ${side.toUpperCase()} ${size} @ $${tickedPrice} token=${tokenId.substring(0, 20)}... sigType=${sigType} funder=${funderAddress.substring(0, 10)}`,
+    );
 
     // Build L2 credentials object
     const creds = {
@@ -84,14 +89,7 @@ serve(async (req) => {
 
     // Create ClobClient — points at actual CLOB to build+sign the order
     // The order is then submitted via the relay to avoid geoblocking
-    const client = new ClobClient(
-      CLOB_HOST,
-      137,
-      wallet as any,
-      creds,
-      sigType,
-      funderAddress,
-    );
+    const client = new ClobClient(CLOB_HOST, 137, wallet as any, creds, sigType, funderAddress);
 
     // Create the signed order
     const orderArgs = {
@@ -128,14 +126,21 @@ serve(async (req) => {
     const tradeRes = await fetch(`${RELAY_URL}/trade`, {
       method: "POST",
       headers: relayHeaders,
-      body: JSON.stringify({ tokenId, side: side.toUpperCase(), amount: size, price: tickedPrice, orderType: "FAK" }),
+      body: JSON.stringify({ tokenId, side: side.toUpperCase(), size: size, price: tickedPrice, orderType: "FAK" }),
     });
 
     if (tradeRes.ok) {
       const tradeResult = await tradeRes.json();
       if (tradeResult?.success || tradeResult?.submitted) {
         console.log(`✅ Submitted via relay /trade`);
-        return json({ success: true, submitted: true, orderId: tradeResult.orderID, finalPrice: tickedPrice, result: tradeResult, via: "relay-trade" });
+        return json({
+          success: true,
+          submitted: true,
+          orderId: tradeResult.orderID,
+          finalPrice: tickedPrice,
+          result: tradeResult,
+          via: "relay-trade",
+        });
       }
     } else {
       const errText = await tradeRes.text();
@@ -154,16 +159,23 @@ serve(async (req) => {
     console.log(`Relay /order [${orderRes.status}]: ${orderText.substring(0, 300)}`);
 
     let orderResult: any;
-    try { orderResult = JSON.parse(orderText); } catch { orderResult = { raw: orderText }; }
+    try {
+      orderResult = JSON.parse(orderText);
+    } catch {
+      orderResult = { raw: orderText };
+    }
 
     if (!orderRes.ok || (!orderResult?.success && orderResult?.error)) {
-      return json({
-        success: false,
-        submitted: false,
-        error: orderResult?.error || orderResult?.message || `Relay error ${orderRes.status}`,
-        relayStatus: orderRes.status,
-        relayResponse: orderResult,
-      }, 400);
+      return json(
+        {
+          success: false,
+          submitted: false,
+          error: orderResult?.error || orderResult?.message || `Relay error ${orderRes.status}`,
+          relayStatus: orderRes.status,
+          relayResponse: orderResult,
+        },
+        400,
+      );
     }
 
     return json({
@@ -174,7 +186,6 @@ serve(async (req) => {
       result: orderResult,
       via: "relay-order",
     });
-
   } catch (e) {
     console.error("execute-trade error:", e);
     return json({ error: e instanceof Error ? e.message : "Unknown error" }, 500);
