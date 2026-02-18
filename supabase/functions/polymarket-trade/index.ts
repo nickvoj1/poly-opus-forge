@@ -13,14 +13,26 @@ const CLOB_HOST = "https://clob.polymarket.com";
 
 // ── L2 HMAC Auth Headers ──
 async function getL2Headers(
-  apiKey: string, secret: string, passphrase: string, timestamp: number,
-  method: string, requestPath: string, body?: string, walletAddress?: string,
+  apiKey: string,
+  secret: string,
+  passphrase: string,
+  timestamp: number,
+  method: string,
+  requestPath: string,
+  body?: string,
+  walletAddress?: string,
 ) {
   const sig = await buildPolyHmacSignature(secret, timestamp, method, requestPath, body);
-  console.log("L2 HMAC:", JSON.stringify({
-    sig: sig?.substring(0, 20), method, requestPath: requestPath?.substring(0, 40),
-    apiKey: apiKey?.substring(0, 8), addr: walletAddress?.substring(0, 10),
-  }));
+  console.log(
+    "L2 HMAC:",
+    JSON.stringify({
+      sig: sig?.substring(0, 20),
+      method,
+      requestPath: requestPath?.substring(0, 40),
+      apiKey: apiKey?.substring(0, 8),
+      addr: walletAddress?.substring(0, 10),
+    }),
+  );
   return {
     POLY_ADDRESS: walletAddress || apiKey,
     POLY_SIGNATURE: sig,
@@ -48,41 +60,52 @@ async function getMarketTokens(conditionId: string): Promise<any> {
 }
 
 async function searchMarkets(query: string): Promise<any[]> {
-  const res = await fetch(`https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=10&query=${encodeURIComponent(query)}`);
+  const res = await fetch(
+    `https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=10&query=${encodeURIComponent(query)}`,
+  );
   return res.ok ? await res.json() : [];
 }
 
 async function getPositions(walletAddress: string): Promise<any> {
   const res = await fetch(`https://data-api.polymarket.com/positions?user=${walletAddress}`);
-  if (!res.ok) { console.error("Positions error:", res.status); return { error: await res.text() }; }
+  if (!res.ok) {
+    console.error("Positions error:", res.status);
+    return { error: await res.text() };
+  }
   return await res.json();
 }
 
 // ── Wallet Balance (Polygon RPC) ──
 async function getWalletBalance(walletAddress: string): Promise<{ usdc: number; matic: number }> {
   const RPC = "https://polygon-rpc.com";
-  const USDC_ADDRS = [
-    "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
-    "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359",
-  ];
+  const USDC_ADDRS = ["0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174", "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359"];
 
   let totalUsdc = 0;
   for (const usdcAddr of USDC_ADDRS) {
     try {
       const padded = walletAddress.replace("0x", "").padStart(64, "0");
       const res = await fetch(RPC, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ jsonrpc: "2.0", method: "eth_call", params: [{ to: usdcAddr, data: `0x70a08231000000000000000000000000${padded}` }, "latest"], id: 1 }),
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          method: "eth_call",
+          params: [{ to: usdcAddr, data: `0x70a08231000000000000000000000000${padded}` }, "latest"],
+          id: 1,
+        }),
       });
       const data = await res.json();
       if (data.result && data.result !== "0x") totalUsdc += parseInt(data.result, 16) / 1e6;
-    } catch (e) { console.error(`USDC balance error (${usdcAddr}):`, e); }
+    } catch (e) {
+      console.error(`USDC balance error (${usdcAddr}):`, e);
+    }
   }
 
   let matic = 0;
   try {
     const res = await fetch(RPC, {
-      method: "POST", headers: { "Content-Type": "application/json" },
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ jsonrpc: "2.0", method: "eth_getBalance", params: [walletAddress, "latest"], id: 2 }),
     });
     const data = await res.json();
@@ -94,8 +117,13 @@ async function getWalletBalance(walletAddress: string): Promise<{ usdc: number; 
 
 // ── Submit Order via Railway Relay (relay handles signing + submission) ──
 async function signAndSubmitOrder(
-  _walletPrivateKey: string, _proxyAddress: string | undefined,
-  tokenId: string, side: "BUY" | "SELL", size: number, price: number, _negRisk = false,
+  _walletPrivateKey: string,
+  _proxyAddress: string | undefined,
+  tokenId: string,
+  side: "BUY" | "SELL",
+  size: number,
+  price: number,
+  _negRisk = false,
   _storedCreds?: { apiKey: string; secret: string; passphrase: string },
 ): Promise<any> {
   let RELAY_URL = Deno.env.get("RELAY_SERVER_URL") || "https://polymarket-kit-production.up.railway.app";
@@ -114,7 +142,7 @@ async function signAndSubmitOrder(
       body: JSON.stringify({
         tokenId,
         side,
-        amount: size,
+        size: size,
         price,
         orderType: "FAK", // Fill and Kill — allows partial fills
       }),
@@ -146,14 +174,25 @@ async function signAndSubmitOrder(
 async function getOpenOrders(apiKey: string, secret: string, passphrase: string, walletAddress?: string): Promise<any> {
   const ts = Math.floor(Date.now() / 1000);
   const headers = await getL2Headers(apiKey, secret, passphrase, ts, "GET", "/data/orders", undefined, walletAddress);
-  const res = await fetch(`${CLOB_HOST}/data/orders`, { method: "GET", headers: { ...headers, "Content-Type": "application/json" } });
+  const res = await fetch(`${CLOB_HOST}/data/orders`, {
+    method: "GET",
+    headers: { ...headers, "Content-Type": "application/json" },
+  });
   return res.ok ? await res.json() : { error: await res.text(), status: res.status };
 }
 
-async function getTradeHistory(apiKey: string, secret: string, passphrase: string, walletAddress?: string): Promise<any> {
+async function getTradeHistory(
+  apiKey: string,
+  secret: string,
+  passphrase: string,
+  walletAddress?: string,
+): Promise<any> {
   const ts = Math.floor(Date.now() / 1000);
   const headers = await getL2Headers(apiKey, secret, passphrase, ts, "GET", "/data/trades", undefined, walletAddress);
-  const res = await fetch(`${CLOB_HOST}/data/trades`, { method: "GET", headers: { ...headers, "Content-Type": "application/json" } });
+  const res = await fetch(`${CLOB_HOST}/data/trades`, {
+    method: "GET",
+    headers: { ...headers, "Content-Type": "application/json" },
+  });
   return res.ok ? await res.json() : { error: await res.text(), status: res.status };
 }
 
@@ -165,12 +204,30 @@ async function verifyViaL1(walletKey: string): Promise<{ ok: boolean; status: nu
   const ts = Math.floor(Date.now() / 1000);
   const sig = await wallet._signTypedData(
     { name: "ClobAuthDomain", version: "1", chainId: 137 },
-    { ClobAuth: [{ name: "address", type: "address" }, { name: "timestamp", type: "string" }, { name: "nonce", type: "uint256" }, { name: "message", type: "string" }] },
-    { address: wallet.address, timestamp: `${ts}`, nonce: 0, message: "This message attests that I control the given wallet" },
+    {
+      ClobAuth: [
+        { name: "address", type: "address" },
+        { name: "timestamp", type: "string" },
+        { name: "nonce", type: "uint256" },
+        { name: "message", type: "string" },
+      ],
+    },
+    {
+      address: wallet.address,
+      timestamp: `${ts}`,
+      nonce: 0,
+      message: "This message attests that I control the given wallet",
+    },
   );
   const res = await fetch(`${CLOB_HOST}/auth/derive-api-key`, {
     method: "GET",
-    headers: { POLY_ADDRESS: wallet.address, POLY_SIGNATURE: sig, POLY_TIMESTAMP: `${ts}`, POLY_NONCE: "0", "Content-Type": "application/json" },
+    headers: {
+      POLY_ADDRESS: wallet.address,
+      POLY_SIGNATURE: sig,
+      POLY_TIMESTAMP: `${ts}`,
+      POLY_NONCE: "0",
+      "Content-Type": "application/json",
+    },
   });
   const body = await res.text();
   console.log(`L1 verify [${res.status}]:`, body);
@@ -178,19 +235,37 @@ async function verifyViaL1(walletKey: string): Promise<{ ok: boolean; status: nu
 }
 
 // ── Get Polymarket CLOB USDC Balance ──
-async function getClobBalance(apiKey: string, secret: string, passphrase: string, walletAddress: string): Promise<number> {
+async function getClobBalance(
+  apiKey: string,
+  secret: string,
+  passphrase: string,
+  walletAddress: string,
+): Promise<number> {
   try {
     const ts = Math.floor(Date.now() / 1000);
-    const headers = await getL2Headers(apiKey, secret, passphrase, ts, "GET", "/balance-allowance", undefined, walletAddress);
+    const headers = await getL2Headers(
+      apiKey,
+      secret,
+      passphrase,
+      ts,
+      "GET",
+      "/balance-allowance",
+      undefined,
+      walletAddress,
+    );
     const res = await fetch(`${CLOB_HOST}/balance-allowance?asset_type=COLLATERAL&signature_type=1`, {
-      method: "GET", headers: { ...headers, "Content-Type": "application/json" },
+      method: "GET",
+      headers: { ...headers, "Content-Type": "application/json" },
     });
     if (!res.ok) return 0;
     const data = await res.json();
     const raw = parseFloat(data.balance || "0");
     console.log(`CLOB balance: ${raw}`);
     return raw > 1000 ? raw / 1e6 : raw;
-  } catch (e) { console.error("CLOB balance error:", e); return 0; }
+  } catch (e) {
+    console.error("CLOB balance error:", e);
+    return 0;
+  }
 }
 
 // ── Main Handler ──
@@ -216,14 +291,17 @@ serve(async (req) => {
         const { ethers } = await import("https://esm.sh/ethers@5.7.2");
         const wallet = new ethers.Wallet(POLY_WALLET_KEY.startsWith("0x") ? POLY_WALLET_KEY : `0x${POLY_WALLET_KEY}`);
         eoaAddress = wallet.address.toLowerCase();
-      } catch (e) { console.error("Wallet derive error:", e); }
+      } catch (e) {
+        console.error("Wallet derive error:", e);
+      }
     }
 
     const clobAuthAddress = eoaAddress;
     const proxyAddress = POLY_PROXY_ADDRESS?.toLowerCase() || eoaAddress;
 
     const { action, ...params } = await req.json();
-    const json = (data: any, status = 200) => new Response(JSON.stringify(data), { status, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    const json = (data: any, status = 200) =>
+      new Response(JSON.stringify(data), { status, headers: { ...corsHeaders, "Content-Type": "application/json" } });
 
     switch (action) {
       case "get-prices": {
@@ -233,13 +311,13 @@ serve(async (req) => {
       }
 
       case "get-orderbook":
-        return json(await getOrderbook(params.tokenId) || { error: "Not found" });
+        return json((await getOrderbook(params.tokenId)) || { error: "Not found" });
 
       case "search-markets":
         return json({ markets: await searchMarkets(params.query || "") });
 
       case "get-market-tokens":
-        return json(await getMarketTokens(params.conditionId) || { error: "Not found" });
+        return json((await getMarketTokens(params.conditionId)) || { error: "Not found" });
 
       case "get-positions":
         if (!proxyAddress) return json({ error: "Wallet not configured" }, 400);
@@ -247,9 +325,12 @@ serve(async (req) => {
 
       case "verify-connection": {
         const connected = !!(POLY_API_KEY && POLY_SECRET && POLY_PASSPHRASE && clobAuthAddress);
-        let verified = false, verifyDebug: any = null;
-        let polymarketUsdc = 0, positionsValue = 0;
-        let eoaBal = { usdc: 0, matic: 0 }, proxyBal = { usdc: 0, matic: 0 };
+        let verified = false,
+          verifyDebug: any = null;
+        let polymarketUsdc = 0,
+          positionsValue = 0;
+        let eoaBal = { usdc: 0, matic: 0 },
+          proxyBal = { usdc: 0, matic: 0 };
 
         if (connected) {
           // Verify via L1 + fetch balances in parallel
@@ -263,14 +344,28 @@ serve(async (req) => {
           const [l1Result, eoa, proxy, posData, clobBal] = await Promise.all(tasks);
           verified = l1Result.ok;
           verifyDebug = { status: l1Result.status, body: l1Result.body };
-          eoaBal = eoa; proxyBal = proxy; polymarketUsdc = clobBal;
-          if (Array.isArray(posData)) posData.forEach((p: any) => positionsValue += p.currentValue || 0);
+          eoaBal = eoa;
+          proxyBal = proxy;
+          polymarketUsdc = clobBal;
+          if (Array.isArray(posData)) posData.forEach((p: any) => (positionsValue += p.currentValue || 0));
         }
 
         const totalUsdc = eoaBal.usdc + proxyBal.usdc + polymarketUsdc;
         return json({
-          connected, verified, walletAddress: proxyAddress || null, eoaAddress: eoaAddress || null, verifyDebug,
-          balance: { usdc: totalUsdc, matic: eoaBal.matic + proxyBal.matic, eoaUsdc: eoaBal.usdc, proxyUsdc: proxyBal.usdc, polymarketUsdc, positionsValue, total: totalUsdc + positionsValue },
+          connected,
+          verified,
+          walletAddress: proxyAddress || null,
+          eoaAddress: eoaAddress || null,
+          verifyDebug,
+          balance: {
+            usdc: totalUsdc,
+            matic: eoaBal.matic + proxyBal.matic,
+            eoaUsdc: eoaBal.usdc,
+            proxyUsdc: proxyBal.usdc,
+            polymarketUsdc,
+            positionsValue,
+            total: totalUsdc + positionsValue,
+          },
         });
       }
 
@@ -282,13 +377,21 @@ serve(async (req) => {
           proxyAddress ? getPositions(proxyAddress) : Promise.resolve([]),
         ]);
         let posValue = 0;
-        if (Array.isArray(posData)) posData.forEach((p: any) => posValue += p.currentValue || 0);
+        if (Array.isArray(posData)) posData.forEach((p: any) => (posValue += p.currentValue || 0));
         let pmUsdc = 0;
         if (POLY_API_KEY && POLY_SECRET && POLY_PASSPHRASE) {
           pmUsdc = await getClobBalance(POLY_API_KEY, POLY_SECRET, POLY_PASSPHRASE, clobAuthAddress);
         }
         const total = eoa.usdc + proxy.usdc + pmUsdc;
-        return json({ usdc: total, matic: eoa.matic + proxy.matic, eoaUsdc: eoa.usdc, proxyUsdc: proxy.usdc, polymarketUsdc: pmUsdc, positionsValue: posValue, total: total + posValue });
+        return json({
+          usdc: total,
+          matic: eoa.matic + proxy.matic,
+          eoaUsdc: eoa.usdc,
+          proxyUsdc: proxy.usdc,
+          polymarketUsdc: pmUsdc,
+          positionsValue: posValue,
+          total: total + posValue,
+        });
       }
 
       case "get-open-orders":
@@ -304,9 +407,20 @@ serve(async (req) => {
         if (!POLY_WALLET_KEY) return json({ error: "Wallet private key not configured" }, 400);
         const { tokenId, side, size, price, negRisk } = params;
         if (!tokenId || !side || !size || !price) return json({ error: "Missing: tokenId, side, size, price" }, 400);
-        const storedCreds = (POLY_API_KEY && POLY_SECRET && POLY_PASSPHRASE)
-          ? { apiKey: POLY_API_KEY, secret: POLY_SECRET, passphrase: POLY_PASSPHRASE } : undefined;
-        const result = await signAndSubmitOrder(POLY_WALLET_KEY, POLY_PROXY_ADDRESS || undefined, tokenId, side, size, price, negRisk || false, storedCreds);
+        const storedCreds =
+          POLY_API_KEY && POLY_SECRET && POLY_PASSPHRASE
+            ? { apiKey: POLY_API_KEY, secret: POLY_SECRET, passphrase: POLY_PASSPHRASE }
+            : undefined;
+        const result = await signAndSubmitOrder(
+          POLY_WALLET_KEY,
+          POLY_PROXY_ADDRESS || undefined,
+          tokenId,
+          side,
+          size,
+          price,
+          negRisk || false,
+          storedCreds,
+        );
         return json(result, result.error ? 400 : 200);
       }
 
@@ -323,20 +437,54 @@ serve(async (req) => {
           const nonce = params.nonce ?? 0;
           const sig = await wallet._signTypedData(
             { name: "ClobAuthDomain", version: "1", chainId: 137 },
-            { ClobAuth: [{ name: "address", type: "address" }, { name: "timestamp", type: "string" }, { name: "nonce", type: "uint256" }, { name: "message", type: "string" }] },
-            { address: authAddress, timestamp: `${ts}`, nonce, message: "This message attests that I control the given wallet" },
+            {
+              ClobAuth: [
+                { name: "address", type: "address" },
+                { name: "timestamp", type: "string" },
+                { name: "nonce", type: "uint256" },
+                { name: "message", type: "string" },
+              ],
+            },
+            {
+              address: authAddress,
+              timestamp: `${ts}`,
+              nonce,
+              message: "This message attests that I control the given wallet",
+            },
           );
-          const l1Headers = { POLY_ADDRESS: authAddress, POLY_SIGNATURE: sig, POLY_TIMESTAMP: `${ts}`, POLY_NONCE: `${nonce}` };
-          let res = await fetch(`${CLOB_HOST}/auth/derive-api-key`, { method: "GET", headers: { ...l1Headers, "Content-Type": "application/json" } });
+          const l1Headers = {
+            POLY_ADDRESS: authAddress,
+            POLY_SIGNATURE: sig,
+            POLY_TIMESTAMP: `${ts}`,
+            POLY_NONCE: `${nonce}`,
+          };
+          let res = await fetch(`${CLOB_HOST}/auth/derive-api-key`, {
+            method: "GET",
+            headers: { ...l1Headers, "Content-Type": "application/json" },
+          });
           let result;
-          if (res.ok) { result = await res.json(); } else {
+          if (res.ok) {
+            result = await res.json();
+          } else {
             const deriveErr = await res.text();
-            res = await fetch(`${CLOB_HOST}/auth/api-key`, { method: "POST", headers: { ...l1Headers, "Content-Type": "application/json" } });
+            res = await fetch(`${CLOB_HOST}/auth/api-key`, {
+              method: "POST",
+              headers: { ...l1Headers, "Content-Type": "application/json" },
+            });
             if (!res.ok) return json({ error: `Derive+Create failed: ${deriveErr}. ${await res.text()}` }, 400);
             result = await res.json();
           }
-          return json({ authAddress, eoaAddress: wallet.address, proxyAddress: proxyAddr, apiKey: result.apiKey, secret: result.secret, passphrase: result.passphrase });
-        } catch (e) { return json({ error: e instanceof Error ? e.message : "Unknown error" }, 500); }
+          return json({
+            authAddress,
+            eoaAddress: wallet.address,
+            proxyAddress: proxyAddr,
+            apiKey: result.apiKey,
+            secret: result.secret,
+            passphrase: result.passphrase,
+          });
+        } catch (e) {
+          return json({ error: e instanceof Error ? e.message : "Unknown error" }, 500);
+        }
       }
 
       case "test-proxy": {
@@ -349,13 +497,24 @@ serve(async (req) => {
           const r = await fetch(`${RELAY_URL}/health`);
           const b = await r.text();
           results.push({ test: "relay health", status: r.status, body: b.substring(0, 300) });
-        } catch (e) { results.push({ test: "relay health", error: String(e) }); }
+        } catch (e) {
+          results.push({ test: "relay health", error: String(e) });
+        }
 
         // Test direct POST /order (check if geoblocked)
         if (POLY_API_KEY && POLY_SECRET && POLY_PASSPHRASE) {
           try {
             const ts = Math.floor(Date.now() / 1000);
-            const h = await getL2Headers(POLY_API_KEY, POLY_SECRET, POLY_PASSPHRASE, ts, "POST", "/order", "{}", clobAuthAddress);
+            const h = await getL2Headers(
+              POLY_API_KEY,
+              POLY_SECRET,
+              POLY_PASSPHRASE,
+              ts,
+              "POST",
+              "/order",
+              "{}",
+              clobAuthAddress,
+            );
             const r = await fetch(`${CLOB_HOST}/order`, {
               method: "POST",
               headers: { ...h, "Content-Type": "application/json" },
@@ -363,7 +522,9 @@ serve(async (req) => {
             });
             const b = await r.text();
             results.push({ test: "direct POST /order", status: r.status, body: b.substring(0, 300) });
-          } catch (e) { results.push({ test: "direct POST /order", error: String(e) }); }
+          } catch (e) {
+            results.push({ test: "direct POST /order", error: String(e) });
+          }
         }
 
         return json({ results });
@@ -375,7 +536,8 @@ serve(async (req) => {
   } catch (e) {
     console.error("polymarket-trade error:", e);
     return new Response(JSON.stringify({ error: e instanceof Error ? e.message : "Unknown error" }), {
-      status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
+      status: 500,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   }
 });

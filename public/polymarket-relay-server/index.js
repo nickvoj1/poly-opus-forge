@@ -2,10 +2,10 @@
 /**
  * Polymarket CLOB Relay Server (with native order signing)
  * Deploy on Railway / Fly.io / Render (US region)
- * 
+ *
  * Signs and submits orders to Polymarket's CLOB API using @polymarket/clob-client.
  * No need for separate order signing — just send trade params.
- * 
+ *
  * Environment:
  *   PORT (optional, default 3000)
  *   RELAY_SECRET (optional, shared secret for auth)
@@ -70,14 +70,7 @@ async function getAuthedClient() {
       passphrase: process.env.POLYMARKET_PASSPHRASE,
     };
 
-    cachedClient = new ClobClient(
-      "https://clob.polymarket.com",
-      137,
-      wallet,
-      cachedCreds,
-      sigType,
-      funder,
-    );
+    cachedClient = new ClobClient("https://clob.polymarket.com", 137, wallet, cachedCreds, sigType, funder);
 
     console.log(`✅ Client initialized with stored L2 creds (sigType=${sigType}, funder=${funder.substring(0, 10)})`);
     return cachedClient;
@@ -148,7 +141,9 @@ app.post("/trade", async (req, res) => {
     const tradeSide = side.toUpperCase() === "BUY" ? Side.BUY : Side.SELL;
     const oType = orderType === "FOK" ? OrderType.FOK : OrderType.FAK;
 
-    console.log(`[${new Date().toISOString()}] 🔄 ${side} $${roundedAmount} of ${tokenId.substring(0, 20)}... @ $${finalPrice} (${orderType}, tick=${tickSize})`);
+    console.log(
+      `[${new Date().toISOString()}] 🔄 ${side} $${roundedAmount} of ${tokenId.substring(0, 20)}... @ $${finalPrice} (${orderType}, tick=${tickSize})`,
+    );
 
     // createAndPostMarketOrder handles signing + submission in one call
     const maxRetries = 3;
@@ -156,12 +151,16 @@ app.post("/trade", async (req, res) => {
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
-        const result = await client.createAndPostMarketOrder({
-          tokenID: tokenId,
-          amount: roundedAmount,
-          price: finalPrice,
-          side: tradeSide,
-        }, undefined, oType);
+        const result = await client.createAndPostMarketOrder(
+          {
+            tokenID: tokenId,
+            size: roundedAmount,
+            price: finalPrice,
+            side: tradeSide,
+          },
+          undefined,
+          oType,
+        );
 
         if (result.success) {
           console.log(`[${new Date().toISOString()}] ✅ Order filled:`, JSON.stringify(result).substring(0, 300));
@@ -184,13 +183,12 @@ app.post("/trade", async (req, res) => {
       }
 
       if (attempt < maxRetries) {
-        await new Promise(r => setTimeout(r, 500));
+        await new Promise((r) => setTimeout(r, 500));
       }
     }
 
     console.error(`[${new Date().toISOString()}] ❌ All ${maxRetries} attempts failed: ${lastError}`);
     res.status(400).json({ success: false, submitted: false, error: lastError, finalPrice, tickSize });
-
   } catch (err) {
     console.error(`[${new Date().toISOString()}] ❌ Trade error:`, err.message);
     res.status(500).json({ error: err.message });
@@ -216,7 +214,11 @@ app.post("/order", async (req, res) => {
 
     const text = await resp.text();
     let data;
-    try { data = JSON.parse(text); } catch { data = { raw: text }; }
+    try {
+      data = JSON.parse(text);
+    } catch {
+      data = { raw: text };
+    }
 
     console.log(`[${new Date().toISOString()}] CLOB ${resp.status}: ${text.slice(0, 300)}`);
 
@@ -245,7 +247,11 @@ app.post("/proxy", async (req, res) => {
     });
     const text = await resp.text();
     let data;
-    try { data = JSON.parse(text); } catch { data = { raw: text }; }
+    try {
+      data = JSON.parse(text);
+    } catch {
+      data = { raw: text };
+    }
     res.status(resp.status).json({ success: resp.ok, status: resp.status, data });
   } catch (err) {
     res.status(502).json({ error: err.message });
