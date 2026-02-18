@@ -187,21 +187,18 @@ async function executeTrade(
   console.log(`🔄 Executing: ${tradeSide} ${hypo.size} of ${hypo.market} @ $${price.toFixed(4)}`);
 
   // Call polymarket-trade edge function to place the order
-  try {
-    const tradeRes = await fetch(`${supabaseUrl}/functions/v1/polymarket-trade`, {
+  // Call YOUR relay (signs + CLOB)
+    const tradeRes = await fetch("https://poly-order-relay-production.up.railway.app/order", {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${supabaseKey}`,
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        action: "sign-order",
         tokenId,
-        side: tradeSide,
-        size: hypo.size,
         price,
-      }),
+        size: hypo.size,
+        side: tradeSide === "SELL" ? 1 : 0
+      })
     });
+
 
     const result = await tradeRes.json();
 
