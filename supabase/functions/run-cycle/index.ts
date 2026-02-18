@@ -19,19 +19,31 @@ async function fetchPolymarket(): Promise<{ text: string; marketsMap: Record<str
     // Fetch ALL crypto markets across multiple time horizons + categories
     const queries = [
       // Urgent: ending <10 min
-      fetch(`https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=50&order=endDate&ascending=true&end_date_min=${endMin}&end_date_max=${soon10}`),
+      fetch(
+        `https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=50&order=endDate&ascending=true&end_date_min=${endMin}&end_date_max=${soon10}`,
+      ),
       // Near: ending <1 hour
-      fetch(`https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=50&order=endDate&ascending=true&end_date_min=${soon10}&end_date_max=${soon60}`),
+      fetch(
+        `https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=50&order=endDate&ascending=true&end_date_min=${soon10}&end_date_max=${soon60}`,
+      ),
       // Medium: ending 1-4 hours
-      fetch(`https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=50&order=endDate&ascending=true&end_date_min=${soon60}&end_date_max=${soon4h}`),
+      fetch(
+        `https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=50&order=endDate&ascending=true&end_date_min=${soon60}&end_date_max=${soon4h}`,
+      ),
       // Longer: ending 4-24 hours
-      fetch(`https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=30&order=endDate&ascending=true&end_date_min=${soon4h}&end_date_max=${soon24h}`),
+      fetch(
+        `https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=30&order=endDate&ascending=true&end_date_min=${soon4h}&end_date_max=${soon24h}`,
+      ),
       // Top volume across all crypto
       fetch(`https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=50&order=volume&ascending=false`),
       // Top liquidity
-      fetch(`https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=30&order=liquidityNum&ascending=false`),
+      fetch(
+        `https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=30&order=liquidityNum&ascending=false`,
+      ),
       // Crypto-specific searches
-      fetch(`https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=30&order=volume&ascending=false&tag=crypto`),
+      fetch(
+        `https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=30&order=volume&ascending=false&tag=crypto`,
+      ),
       fetch(`https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=20&query=Bitcoin`),
       fetch(`https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=20&query=Ethereum`),
       fetch(`https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=20&query=Solana`),
@@ -41,7 +53,7 @@ async function fetchPolymarket(): Promise<{ text: string; marketsMap: Record<str
     ];
 
     const responses = await Promise.all(queries);
-    const allData = await Promise.all(responses.map(r => r.ok ? r.json() : []));
+    const allData = await Promise.all(responses.map((r) => (r.ok ? r.json() : [])));
 
     // Deduplicate by market ID
     const seen = new Set<string>();
@@ -69,21 +81,21 @@ async function fetchPolymarket(): Promise<{ text: string; marketsMap: Record<str
     };
 
     // Categorize markets
-    const urgent = allMarkets.filter(m => {
+    const urgent = allMarkets.filter((m) => {
       const end = m.endDate || m.end_date_iso;
       return end && new Date(end).getTime() - now.getTime() < 10 * 60 * 1000;
     });
-    const nearTerm = allMarkets.filter(m => {
+    const nearTerm = allMarkets.filter((m) => {
       const end = m.endDate || m.end_date_iso;
       const diff = end ? new Date(end).getTime() - now.getTime() : Infinity;
       return diff >= 10 * 60 * 1000 && diff < 60 * 60 * 1000;
     });
-    const medium = allMarkets.filter(m => {
+    const medium = allMarkets.filter((m) => {
       const end = m.endDate || m.end_date_iso;
       const diff = end ? new Date(end).getTime() - now.getTime() : Infinity;
       return diff >= 60 * 60 * 1000 && diff < 4 * 60 * 60 * 1000;
     });
-    const longer = allMarkets.filter(m => {
+    const longer = allMarkets.filter((m) => {
       const end = m.endDate || m.end_date_iso;
       const diff = end ? new Date(end).getTime() - now.getTime() : Infinity;
       return diff >= 4 * 60 * 60 * 1000;
@@ -93,13 +105,25 @@ async function fetchPolymarket(): Promise<{ text: string; marketsMap: Record<str
     const byVol = (a: any, b: any) => (b.volumeNum || 0) - (a.volumeNum || 0);
 
     const sections = [
-      urgent.length ? `⚡ ENDING <10 MIN (${urgent.length}):\n${urgent.sort(byVol).slice(0, 20).map(formatMarket).join("\n")}` : "",
-      nearTerm.length ? `🕐 ENDING 10-60 MIN (${nearTerm.length}):\n${nearTerm.sort(byVol).slice(0, 20).map(formatMarket).join("\n")}` : "",
-      medium.length ? `⏳ ENDING 1-4 HOURS (${medium.length}):\n${medium.sort(byVol).slice(0, 15).map(formatMarket).join("\n")}` : "",
-      longer.sort(byVol).length ? `📅 ENDING 4-24+ HOURS (${longer.length}):\n${longer.sort(byVol).slice(0, 10).map(formatMarket).join("\n")}` : "",
-    ].filter(Boolean).join("\n\n");
+      urgent.length
+        ? `⚡ ENDING <10 MIN (${urgent.length}):\n${urgent.sort(byVol).slice(0, 20).map(formatMarket).join("\n")}`
+        : "",
+      nearTerm.length
+        ? `🕐 ENDING 10-60 MIN (${nearTerm.length}):\n${nearTerm.sort(byVol).slice(0, 20).map(formatMarket).join("\n")}`
+        : "",
+      medium.length
+        ? `⏳ ENDING 1-4 HOURS (${medium.length}):\n${medium.sort(byVol).slice(0, 15).map(formatMarket).join("\n")}`
+        : "",
+      longer.sort(byVol).length
+        ? `📅 ENDING 4-24+ HOURS (${longer.length}):\n${longer.sort(byVol).slice(0, 10).map(formatMarket).join("\n")}`
+        : "",
+    ]
+      .filter(Boolean)
+      .join("\n\n");
 
-    console.log(`📊 Scanned ${allMarkets.length} unique markets (${urgent.length} urgent, ${nearTerm.length} near, ${medium.length} medium, ${longer.length} longer)`);
+    console.log(
+      `📊 Scanned ${allMarkets.length} unique markets (${urgent.length} urgent, ${nearTerm.length} near, ${medium.length} medium, ${longer.length} longer)`,
+    );
 
     return {
       text: `POLYMARKET ALL CRYPTO MARKETS (${allMarkets.length} total):\n${sections || "No active markets found."}`,
@@ -120,8 +144,10 @@ async function fetchCryptoPrices(): Promise<string> {
           const res = await fetch(`https://api.binance.com/api/v3/ticker/24hr?symbol=${sym}`);
           const d = await res.json();
           return `${sym}: $${parseFloat(d.lastPrice).toFixed(2)} (${d.priceChangePercent > 0 ? "+" : ""}${d.priceChangePercent}% 24h, vol=$${Math.round(parseFloat(d.quoteVolume) / 1e6)}M)`;
-        } catch { return `${sym}: error`; }
-      })
+        } catch {
+          return `${sym}: error`;
+        }
+      }),
     );
     return `CRYPTO PRICES:\n${results.join("\n")}`;
   } catch {
@@ -131,12 +157,14 @@ async function fetchCryptoPrices(): Promise<string> {
 
 // Execute a single trade by calling the polymarket-trade edge function
 async function executeTrade(
-  supabaseUrl: string, supabaseKey: string,
-  hypo: any, marketsMap: Record<string, any>
+  supabaseUrl: string,
+  supabaseKey: string,
+  hypo: any,
+  marketsMap: Record<string, any>,
 ): Promise<{ status: string; price: number; error?: string; orderID?: string }> {
   const meta = marketsMap[hypo.market] || {};
   let tokenIds: string[] = [];
-  
+
   // Get token IDs from market data
   const rawIds = hypo.clobTokenIds || meta.clobTokenIds;
   if (rawIds) {
@@ -154,8 +182,10 @@ async function executeTrade(
         if (res.ok) {
           const markets = await res.json();
           if (markets[0]?.clobTokenIds) {
-            const ids = typeof markets[0].clobTokenIds === "string" 
-              ? JSON.parse(markets[0].clobTokenIds) : markets[0].clobTokenIds;
+            const ids =
+              typeof markets[0].clobTokenIds === "string"
+                ? JSON.parse(markets[0].clobTokenIds)
+                : markets[0].clobTokenIds;
             tokenIds = ids;
           }
         }
@@ -171,7 +201,7 @@ async function executeTrade(
   // For SELL/BUY_NO, use the NO token (index 1); for BUY, use YES token (index 0)
   const action = (hypo.action || "BUY").toUpperCase();
   const isSell = action === "SELL" || action === "BUY_NO";
-  const tokenId = isSell ? (tokenIds[1] || tokenIds[0]) : tokenIds[0];
+  const tokenId = isSell ? tokenIds[1] || tokenIds[0] : tokenIds[0];
   const tradeSide = isSell ? "SELL" : "BUY";
 
   // Get live midpoint price
@@ -187,18 +217,21 @@ async function executeTrade(
   console.log(`🔄 Executing: ${tradeSide} ${hypo.size} of ${hypo.market} @ $${price.toFixed(4)}`);
 
   // Call polymarket-trade edge function to place the order
-  // Call YOUR relay (signs + CLOB)
+  try {
     const tradeRes = await fetch("https://poly-order-relay-production.up.railway.app/order", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${supabaseKey}`,
+      },
       body: JSON.stringify({
+        action: "sign-order",
         tokenId,
-        price,
+        side: tradeSide,
         size: hypo.size,
-        side: tradeSide === "SELL" ? 1 : 0
-      })
+        price,
+      }),
     });
-
 
     const result = await tradeRes.json();
 
@@ -232,10 +265,7 @@ serve(async (req) => {
     const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
     const supabaseKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
-    const [polyResult, cryptoData] = await Promise.all([
-      fetchPolymarket(),
-      fetchCryptoPrices(),
-    ]);
+    const [polyResult, cryptoData] = await Promise.all([fetchPolymarket(), fetchCryptoPrices()]);
 
     const polyData = polyResult.text;
     const marketsMap = polyResult.marketsMap;
@@ -248,7 +278,6 @@ ${polyData}
 ${cryptoData}
 
 ${systemPrompt}`;
-
 
     console.log(`🚀 Cycle ${cycle} starting (bankroll: $${bankroll}, live: ${liveTrading})`);
 
@@ -298,16 +327,19 @@ CRITICAL: ONLY trade CRYPTO markets ending SOON (<60 min). Use EXACT market ques
       console.error("AI gateway error:", response.status, errText);
       if (response.status === 429) {
         return new Response(JSON.stringify({ error: "Rate limit exceeded. Please wait and try again." }), {
-          status: 429, headers: { ...corsHeaders, "Content-Type": "application/json" },
+          status: 429,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
       }
       if (response.status === 402) {
         return new Response(JSON.stringify({ error: "AI credits exhausted." }), {
-          status: 402, headers: { ...corsHeaders, "Content-Type": "application/json" },
+          status: 402,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
       }
       return new Response(JSON.stringify({ error: `AI gateway error: ${response.status}` }), {
-        status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
+        status: 500,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
@@ -348,7 +380,7 @@ CRITICAL: ONLY trade CRYPTO markets ending SOON (<60 min). Use EXACT market ques
 
     if (liveTrading && parsed.hypos.length > 0) {
       console.log(`⚡ Executing ${parsed.hypos.length} live trades...`);
-      
+
       for (const hypo of parsed.hypos.slice(0, 10)) {
         const tradeResult = await executeTrade(supabaseUrl, supabaseKey, hypo, marketsMap);
         tradeResults.push({ market: hypo.market, ...tradeResult });
@@ -375,9 +407,9 @@ CRITICAL: ONLY trade CRYPTO markets ending SOON (<60 min). Use EXACT market ques
         }
       }
 
-      const filled = tradeResults.filter(t => t.status === "filled").length;
-      const failed = tradeResults.filter(t => t.status === "failed").length;
-      const skipped = tradeResults.filter(t => t.status === "skipped").length;
+      const filled = tradeResults.filter((t) => t.status === "filled").length;
+      const failed = tradeResults.filter((t) => t.status === "failed").length;
+      const skipped = tradeResults.filter((t) => t.status === "skipped").length;
       console.log(`📊 Results: ${filled} filled, ${failed} failed, ${skipped} skipped`);
       parsed.tradeResults = tradeResults;
       parsed.log += ` | Trades: ${filled}/${tradeResults.length} filled`;
@@ -415,7 +447,7 @@ CRITICAL: ONLY trade CRYPTO markets ending SOON (<60 min). Use EXACT market ques
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "Authorization": `Bearer ${supabaseKey}`,
+          Authorization: `Bearer ${supabaseKey}`,
         },
       });
     } catch {}
@@ -427,9 +459,9 @@ CRITICAL: ONLY trade CRYPTO markets ending SOON (<60 min). Use EXACT market ques
     });
   } catch (e) {
     console.error("run-cycle error:", e);
-    return new Response(
-      JSON.stringify({ error: e instanceof Error ? e.message : "Unknown error" }),
-      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-    );
+    return new Response(JSON.stringify({ error: e instanceof Error ? e.message : "Unknown error" }), {
+      status: 500,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
   }
 });
