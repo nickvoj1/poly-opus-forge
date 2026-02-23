@@ -234,54 +234,64 @@ async function signAndSubmitOrder(
 
     console.log(`Signing order locally: ${side} $${size} @ $${finalPrice} (tick=${tickSize})`);
 
-    // Create signed order
-    const signedOrder = await client.createOrder({
-      tokenID: tokenId,
-      price: finalPrice,
-      size,
-      side: tradeSide,
-      orderType: OrderType.FAK,
-    });
+    // Monkey-patch fetch to route CLOB requests through proxy
+    const originalFetch = globalThis.fetch;
+    let PROXY_API_URL = Deno.env.get("PROXY_API_URL") || "";
+    if (PROXY_API_URL && !PROXY_API_URL.startsWith("http")) PROXY_API_URL = `https://${PROXY_API_URL}`;
 
-    console.log("Signed order created:", JSON.stringify(signedOrder).substring(0, 200));
-
-    // Build L2 HMAC headers for submission
-    const ts = Math.floor(Date.now() / 1000);
-    const orderBody = JSON.stringify(signedOrder);
-    const l2Sig = await buildPolyHmacSignature(storedCreds.secret, ts, "POST", "/order", orderBody);
-    const polyHeaders: Record<string, string> = {
-      POLY_ADDRESS: wallet.address,
-      POLY_SIGNATURE: l2Sig,
-      POLY_TIMESTAMP: `${ts}`,
-      POLY_API_KEY: storedCreds.apiKey,
-      POLY_PASSPHRASE: storedCreds.passphrase,
-      "Content-Type": "application/json",
-    };
-
-    // Submit via proxy (bypasses geoblocking)
-    const result = await proxiedFetch(`${CLOB_HOST}/order`, {
-      method: "POST",
-      headers: polyHeaders,
-      body: orderBody,
-    });
-
-    console.log(`Order submission [${result.status}]:`, JSON.stringify(result.data).substring(0, 300));
-
-    if (result.ok && (result.data?.orderID || result.data?.success)) {
-      return {
-        submitted: true,
-        result: result.data,
-        finalPrice,
-        tickSize: `${tickSize}`,
-        via: "local-sign-proxy-submit",
+    if (PROXY_API_URL) {
+      globalThis.fetch = async (input: any, init?: any) => {
+        const url = typeof input === "string" ? input : input?.url;
+        if (url && url.includes("clob.polymarket.com")) {
+          // Convert Headers object to plain object
+          let hdrs: Record<string, string> = {};
+          if (init?.headers) {
+            if (typeof init.headers.forEach === "function") {
+              init.headers.forEach((v: string, k: string) => { hdrs[k] = v; });
+            } else if (typeof init.headers === "object") {
+              hdrs = { ...init.headers };
+            }
+          }
+          console.log(`Proxy intercept: ${init?.method || "GET"} ${url}`);
+          const proxyRes = await originalFetch(PROXY_API_URL, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              url,
+              method: init?.method || "GET",
+              headers: hdrs,
+              body: init?.body,
+            }),
+          });
+          const result = await proxyRes.json();
+          const responseBody = typeof result.data === "string" ? result.data : JSON.stringify(result.data ?? result);
+          return new Response(responseBody, {
+            status: result.status ?? proxyRes.status,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        return originalFetch(input, init);
       };
-    } else {
-      return {
-        submitted: false,
-        error: result.data?.error || result.data?.message || `Order rejected (${result.status})`,
-        finalPrice,
-        result: result.data,
-      };
+    }
+
+    try {
+      console.log(`SDK createAndPostOrder: ${side} $${size} @ $${finalPrice} (tick=${tickSize})`);
+      const response = await client.createAndPostOrder(
+        { tokenID: tokenId, price: finalPrice, size, side: tradeSide },
+        { tickSize: `${tickSize}`, negRisk: _negRisk },
+        OrderType.FAK,
+      );
+      console.log("SDK response:", JSON.stringify(response).substring(0, 400));
+      globalThis.fetch = originalFetch;
+
+      if (response?.orderID || response?.success) {
+        return { submitted: true, result: response, finalPrice, tickSize: `${tickSize}`, via: "sdk-proxy" };
+      } else {
+        return { submitted: false, error: response?.error || response?.message || "Order rejected", finalPrice, result: response };
+      }
+    } catch (e) {
+      globalThis.fetch = originalFetch;
+      throw e;
     }
   } catch (e) {
     console.error("signAndSubmitOrder error:", e);
