@@ -521,6 +521,43 @@ serve(async (req) => {
         if (!POLY_WALLET_KEY) return json({ error: "Wallet private key not configured" }, 400);
         const { tokenId, side, size, price, negRisk } = params;
         if (!tokenId || !side || !size || !price) return json({ error: "Missing: tokenId, side, size, price" }, 400);
+
+        // Strategy 1: Use relay server's /trade endpoint (it signs + submits from non-blocked region)
+        let RELAY_URL = Deno.env.get("RELAY_SERVER_URL") || "";
+        if (RELAY_URL && !RELAY_URL.startsWith("http")) RELAY_URL = `https://${RELAY_URL}`;
+        const RELAY_SECRET_VAL = Deno.env.get("RELAY_SECRET") || "";
+
+        if (RELAY_URL) {
+          console.log(`Routing trade via relay ${RELAY_URL}/trade`);
+          const relayHeaders: Record<string, string> = { "Content-Type": "application/json" };
+          if (RELAY_SECRET_VAL) relayHeaders["x-relay-secret"] = RELAY_SECRET_VAL;
+
+          try {
+            const relayRes = await fetch(`${RELAY_URL}/trade`, {
+              method: "POST",
+              headers: relayHeaders,
+              body: JSON.stringify({ tokenId, side, amount: size, price, orderType: "FAK" }),
+            });
+            const relayResult = await relayRes.json();
+            console.log(`Relay /trade response [${relayRes.status}]:`, JSON.stringify(relayResult).substring(0, 300));
+
+            if (relayResult.success) {
+              return json({
+                submitted: true,
+                result: relayResult.data || relayResult,
+                finalPrice: relayResult.finalPrice || price,
+                tickSize: relayResult.tickSize || "0.01",
+                via: "relay-trade",
+              });
+            } else {
+              console.log("Relay /trade failed, falling back to local sign + proxy submit");
+            }
+          } catch (e) {
+            console.error("Relay /trade error:", e);
+          }
+        }
+
+        // Strategy 2: Sign locally, submit via proxy
         const storedCreds =
           POLY_API_KEY && POLY_SECRET && POLY_PASSPHRASE
             ? { apiKey: POLY_API_KEY, secret: POLY_SECRET, passphrase: POLY_PASSPHRASE }
