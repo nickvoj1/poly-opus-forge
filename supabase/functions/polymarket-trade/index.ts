@@ -115,57 +115,171 @@ async function getWalletBalance(walletAddress: string): Promise<{ usdc: number; 
   return { usdc: totalUsdc, matic };
 }
 
-// ── Submit Order via Railway Relay (relay handles signing + submission) ──
+// ── Proxied fetch: routes request through a proxy API to bypass geoblocking ──
+async function proxiedFetch(
+  url: string,
+  options: { method: string; headers: Record<string, string>; body?: string },
+): Promise<{ ok: boolean; status: number; data: any }> {
+  const PROXY_API_URL = Deno.env.get("PROXY_API_URL");
+
+  if (PROXY_API_URL) {
+    // Route through proxy worker (Cloudflare Worker, VPS, etc.)
+    console.log(`Proxying request to ${url} via ${PROXY_API_URL}`);
+    const proxyRes = await fetch(PROXY_API_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        url,
+        method: options.method,
+        headers: options.headers,
+        body: options.body,
+      }),
+    });
+    const result = await proxyRes.json();
+    return {
+      ok: result.success ?? proxyRes.ok,
+      status: result.status ?? proxyRes.status,
+      data: result.data ?? result,
+    };
+  }
+
+  // Fallback: try relay server
+  let RELAY_URL = Deno.env.get("RELAY_SERVER_URL") || "";
+  if (RELAY_URL && !RELAY_URL.startsWith("http")) RELAY_URL = `https://${RELAY_URL}`;
+  const RELAY_SECRET = Deno.env.get("RELAY_SECRET") || "";
+
+  if (RELAY_URL) {
+    console.log(`Proxying via relay ${RELAY_URL}/proxy`);
+    const relayHeaders: Record<string, string> = { "Content-Type": "application/json" };
+    if (RELAY_SECRET) relayHeaders["x-relay-secret"] = RELAY_SECRET;
+
+    const relayRes = await fetch(`${RELAY_URL}/proxy`, {
+      method: "POST",
+      headers: relayHeaders,
+      body: JSON.stringify({
+        url,
+        method: options.method,
+        headers: options.headers,
+        body: options.body ? JSON.parse(options.body) : undefined,
+      }),
+    });
+    const result = await relayRes.json();
+    return {
+      ok: result.success ?? relayRes.ok,
+      status: result.status ?? relayRes.status,
+      data: result.data ?? result,
+    };
+  }
+
+  // Last resort: direct fetch (will fail if geoblocked)
+  console.log(`Direct fetch to ${url} (may be geoblocked)`);
+  const res = await fetch(url, {
+    method: options.method,
+    headers: options.headers,
+    body: options.body,
+  });
+  const text = await res.text();
+  let data;
+  try { data = JSON.parse(text); } catch { data = { raw: text }; }
+  return { ok: res.ok, status: res.status, data };
+}
+
+// ── Submit Order: sign locally, submit via proxy ──
 async function signAndSubmitOrder(
-  _walletPrivateKey: string,
-  _proxyAddress: string | undefined,
+  walletPrivateKey: string,
+  proxyAddress: string | undefined,
   tokenId: string,
   side: "BUY" | "SELL",
   size: number,
   price: number,
   _negRisk = false,
-  _storedCreds?: { apiKey: string; secret: string; passphrase: string },
+  storedCreds?: { apiKey: string; secret: string; passphrase: string },
 ): Promise<any> {
-  let RELAY_URL = Deno.env.get("RELAY_SERVER_URL") || "https://polymarket-kit-production.up.railway.app";
-  if (RELAY_URL && !RELAY_URL.startsWith("http")) RELAY_URL = `https://${RELAY_URL}`;
-  const RELAY_SECRET = Deno.env.get("RELAY_SECRET") || "";
-
-  console.log(`Submitting trade to relay: ${side} $${size} of ${tokenId.substring(0, 20)}... @ $${price}`);
+  if (!storedCreds) return { error: "API credentials required for local signing" };
 
   try {
-    const headers: Record<string, string> = { "Content-Type": "application/json" };
-    if (RELAY_SECRET) headers["x-relay-secret"] = RELAY_SECRET;
+    const { ethers } = await import("https://esm.sh/ethers@5.7.2");
+    const pk = walletPrivateKey.startsWith("0x") ? walletPrivateKey : `0x${walletPrivateKey}`;
+    const wallet = new ethers.Wallet(pk);
+    const funderAddress = proxyAddress || wallet.address;
+    const sigType = proxyAddress ? 2 : 0;
 
-    const relayRes = await fetch(`${RELAY_URL}/trade`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({
-        tokenId,
-        side,
-        size: size,
-        price,
-        orderType: "FAK", // Fill and Kill — allows partial fills
-      }),
+    const creds = {
+      key: storedCreds.apiKey,
+      secret: storedCreds.secret,
+      passphrase: storedCreds.passphrase,
+    };
+
+    // Create ClobClient for local order signing
+    const client = new ClobClient(CLOB_HOST, 137, wallet as any, creds, sigType, funderAddress);
+
+    // Get tick size
+    let tickSize = 0.01;
+    try {
+      const book = await client.getOrderBook(tokenId);
+      if (book?.market?.minimum_tick_size) tickSize = parseFloat(book.market.minimum_tick_size);
+    } catch (e) {
+      console.log("Tick size lookup failed, using 0.01");
+    }
+
+    // Round price to tick
+    const tickedPrice = Math.round(price / tickSize) * tickSize;
+    const finalPrice = Math.max(tickSize, Math.min(1 - tickSize, tickedPrice));
+    const tradeSide = side === "BUY" ? ClobSide.BUY : ClobSide.SELL;
+
+    console.log(`Signing order locally: ${side} $${size} @ $${finalPrice} (tick=${tickSize})`);
+
+    // Create signed order
+    const signedOrder = await client.createOrder({
+      tokenID: tokenId,
+      price: finalPrice,
+      size,
+      side: tradeSide,
+      orderType: OrderType.FAK,
     });
 
-    const result = await relayRes.json();
-    console.log(`Relay response [${relayRes.status}]:`, JSON.stringify(result).substring(0, 500));
+    console.log("Signed order created:", JSON.stringify(signedOrder).substring(0, 200));
 
-    if (result.success || result.submitted) {
-      console.log(`✅ Order submitted → ID: ${result.orderID} (via relay)`);
+    // Build L2 HMAC headers for submission
+    const ts = Math.floor(Date.now() / 1000);
+    const orderBody = JSON.stringify(signedOrder);
+    const l2Sig = await buildPolyHmacSignature(storedCreds.secret, ts, "POST", "/order", orderBody);
+    const polyHeaders: Record<string, string> = {
+      POLY_ADDRESS: wallet.address,
+      POLY_SIGNATURE: l2Sig,
+      POLY_TIMESTAMP: `${ts}`,
+      POLY_API_KEY: storedCreds.apiKey,
+      POLY_PASSPHRASE: storedCreds.passphrase,
+      "Content-Type": "application/json",
+    };
+
+    // Submit via proxy (bypasses geoblocking)
+    const result = await proxiedFetch(`${CLOB_HOST}/order`, {
+      method: "POST",
+      headers: polyHeaders,
+      body: orderBody,
+    });
+
+    console.log(`Order submission [${result.status}]:`, JSON.stringify(result.data).substring(0, 300));
+
+    if (result.ok && (result.data?.orderID || result.data?.success)) {
       return {
         submitted: true,
-        result: result.data || result,
-        finalPrice: result.finalPrice || price,
-        tickSize: result.tickSize || "0.01",
-        via: "railway-relay-clob-client",
+        result: result.data,
+        finalPrice,
+        tickSize: `${tickSize}`,
+        via: "local-sign-proxy-submit",
       };
     } else {
-      console.error(`❌ Relay trade failed: ${result.error}`);
-      return { submitted: false, error: result.error || "relay_trade_failed", finalPrice: result.finalPrice || price };
+      return {
+        submitted: false,
+        error: result.data?.error || result.data?.message || `Order rejected (${result.status})`,
+        finalPrice,
+        result: result.data,
+      };
     }
   } catch (e) {
-    console.error("Relay request failed:", e);
+    console.error("signAndSubmitOrder error:", e);
     return { error: e instanceof Error ? e.message : String(e) };
   }
 }
