@@ -120,7 +120,12 @@ async function proxiedFetch(
   url: string,
   options: { method: string; headers: Record<string, string>; body?: string },
 ): Promise<{ ok: boolean; status: number; data: any }> {
-  const PROXY_API_URL = Deno.env.get("PROXY_API_URL");
+  let PROXY_API_URL = Deno.env.get("PROXY_API_URL") || "";
+
+  // Ensure the proxy URL has a protocol prefix
+  if (PROXY_API_URL && !PROXY_API_URL.startsWith("http")) {
+    PROXY_API_URL = `https://${PROXY_API_URL}`;
+  }
 
   if (PROXY_API_URL) {
     // Route through proxy worker (Cloudflare Worker, VPS, etc.)
