@@ -252,15 +252,26 @@ async function signAndSubmitOrder(
     // Create ClobClient for local order signing
     const client = new ClobClient(CLOB_HOST, 137, wallet as any, creds, sigType, funderAddress);
 
-    // Fetch tick size, fee rate, and negRisk via proxy (CLOB is geoblocked from EU)
+    // Fetch tick size, fee rate, and negRisk via multiple sources
     let tickSize = 0.01;
     let feeRateBps = 0;
     let negRisk = _negRisk;
+
+    // 1. Try Gamma API first for negRisk (not geoblocked)
+    const gammaNegRisk = await fetchNegRiskFromGamma(tokenId);
+    if (gammaNegRisk !== null) {
+      negRisk = gammaNegRisk;
+      console.log(`negRisk from Gamma API: ${negRisk}`);
+    }
+
+    // 2. Fetch tick size and fee rate via proxy, and CLOB negRisk as fallback
     try {
       const [tickRes, feeRes, negRiskRes] = await Promise.all([
         proxiedFetch(`${CLOB_HOST}/tick-size?token_id=${tokenId}`, { method: "GET", headers: {} }),
         proxiedFetch(`${CLOB_HOST}/fee-rate?token_id=${tokenId}`, { method: "GET", headers: {} }),
-        proxiedFetch(`${CLOB_HOST}/neg-risk?token_id=${tokenId}`, { method: "GET", headers: {} }),
+        gammaNegRisk === null
+          ? proxiedFetch(`${CLOB_HOST}/neg-risk?token_id=${tokenId}`, { method: "GET", headers: {} })
+          : Promise.resolve({ ok: false, status: 0, data: {} }),
       ]);
       if (tickRes.ok && tickRes.data?.minimum_tick_size) {
         tickSize = parseFloat(tickRes.data.minimum_tick_size);
@@ -268,13 +279,14 @@ async function signAndSubmitOrder(
       if (feeRes.ok && feeRes.data?.base_fee !== undefined) {
         feeRateBps = feeRes.data.base_fee;
       }
-      if (negRiskRes.ok && negRiskRes.data?.neg_risk !== undefined) {
+      if (gammaNegRisk === null && negRiskRes.ok && negRiskRes.data?.neg_risk !== undefined) {
         negRisk = negRiskRes.data.neg_risk;
       }
-      console.log(`Market params: tickSize=${tickSize}, feeRateBps=${feeRateBps}, negRisk=${negRisk}`);
     } catch (e) {
       console.log("Market params lookup failed, using defaults");
     }
+
+    console.log(`Market params: tickSize=${tickSize}, feeRateBps=${feeRateBps}, negRisk=${negRisk}`);
 
     // Round price to tick
     const tickedPrice = Math.round(price / tickSize) * tickSize;
