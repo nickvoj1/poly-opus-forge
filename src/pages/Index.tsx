@@ -130,9 +130,10 @@ const Dashboard = () => {
 
       addLog(`📊 ${hypo.market}: px=$${price.toFixed(4)}, sz=${hypo.size}`);
 
-      // Call new execute-trade function → poly-order-relay-production → Polymarket CLOB
-      const { data: result, error: tradeErr } = await supabase.functions.invoke("execute-trade", {
+      // Call polymarket-trade function to place the order
+      const { data: result, error: tradeErr } = await supabase.functions.invoke("polymarket-trade", {
         body: {
+          action: "place-trade",
           tokenId,
           side: hypo.action === "BUY" ? "BUY" : "SELL",
           size: hypo.size,
