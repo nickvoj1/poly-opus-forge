@@ -218,13 +218,28 @@ async function signAndSubmitOrder(
     // Create ClobClient for local order signing
     const client = new ClobClient(CLOB_HOST, 137, wallet as any, creds, sigType, funderAddress);
 
-    // Get tick size
+    // Fetch tick size, fee rate, and negRisk via proxy (CLOB is geoblocked from EU)
     let tickSize = 0.01;
+    let feeRateBps = 0;
+    let negRisk = _negRisk;
     try {
-      const book = await client.getOrderBook(tokenId);
-      if (book?.market?.minimum_tick_size) tickSize = parseFloat(book.market.minimum_tick_size);
+      const [tickRes, feeRes, negRiskRes] = await Promise.all([
+        proxiedFetch(`${CLOB_HOST}/tick-size?token_id=${tokenId}`, { method: "GET", headers: {} }),
+        proxiedFetch(`${CLOB_HOST}/fee-rate?token_id=${tokenId}`, { method: "GET", headers: {} }),
+        proxiedFetch(`${CLOB_HOST}/neg-risk?token_id=${tokenId}`, { method: "GET", headers: {} }),
+      ]);
+      if (tickRes.ok && tickRes.data?.minimum_tick_size) {
+        tickSize = parseFloat(tickRes.data.minimum_tick_size);
+      }
+      if (feeRes.ok && feeRes.data?.base_fee !== undefined) {
+        feeRateBps = feeRes.data.base_fee;
+      }
+      if (negRiskRes.ok && negRiskRes.data?.neg_risk !== undefined) {
+        negRisk = negRiskRes.data.neg_risk;
+      }
+      console.log(`Market params: tickSize=${tickSize}, feeRateBps=${feeRateBps}, negRisk=${negRisk}`);
     } catch (e) {
-      console.log("Tick size lookup failed, using 0.01");
+      console.log("Market params lookup failed, using defaults");
     }
 
     // Round price to tick
@@ -232,66 +247,67 @@ async function signAndSubmitOrder(
     const finalPrice = Math.max(tickSize, Math.min(1 - tickSize, tickedPrice));
     const tradeSide = side === "BUY" ? ClobSide.BUY : ClobSide.SELL;
 
-    console.log(`Signing order locally: ${side} $${size} @ $${finalPrice} (tick=${tickSize})`);
+    console.log(`Signing order: ${side} $${size} @ $${finalPrice} (tick=${tickSize}, fee=${feeRateBps}, negRisk=${negRisk})`);
 
-    // Monkey-patch fetch to route CLOB requests through proxy
-    const originalFetch = globalThis.fetch;
-    let PROXY_API_URL = Deno.env.get("PROXY_API_URL") || "";
-    if (PROXY_API_URL && !PROXY_API_URL.startsWith("http")) PROXY_API_URL = `https://${PROXY_API_URL}`;
+    // Create signed order with correct market params
+    const signedOrder = await client.createOrder(
+      { tokenID: tokenId, price: finalPrice, size, side: tradeSide, orderType: OrderType.FAK, feeRateBps },
+      { tickSize: `${tickSize}`, negRisk },
+    );
 
-    if (PROXY_API_URL) {
-      globalThis.fetch = async (input: any, init?: any) => {
-        const url = typeof input === "string" ? input : input?.url;
-        if (url && url.includes("clob.polymarket.com")) {
-          // Convert Headers object to plain object
-          let hdrs: Record<string, string> = {};
-          if (init?.headers) {
-            if (typeof init.headers.forEach === "function") {
-              init.headers.forEach((v: string, k: string) => { hdrs[k] = v; });
-            } else if (typeof init.headers === "object") {
-              hdrs = { ...init.headers };
-            }
-          }
-          console.log(`Proxy intercept: ${init?.method || "GET"} ${url}`);
-          const proxyRes = await originalFetch(PROXY_API_URL, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              url,
-              method: init?.method || "GET",
-              headers: hdrs,
-              body: init?.body,
-            }),
-          });
-          const result = await proxyRes.json();
-          const responseBody = typeof result.data === "string" ? result.data : JSON.stringify(result.data ?? result);
-          return new Response(responseBody, {
-            status: result.status ?? proxyRes.status,
-            headers: { "Content-Type": "application/json" },
-          });
-        }
-        return originalFetch(input, init);
-      };
-    }
+    console.log("Signed order side:", signedOrder.side, typeof signedOrder.side, "| feeRateBps:", signedOrder.feeRateBps, "| signatureType:", signedOrder.signatureType);
 
-    try {
-      console.log(`SDK createAndPostOrder: ${side} $${size} @ $${finalPrice} (tick=${tickSize})`);
-      const response = await client.createAndPostOrder(
-        { tokenID: tokenId, price: finalPrice, size, side: tradeSide },
-        { tickSize: `${tickSize}`, negRisk: _negRisk },
-        OrderType.FAK,
-      );
-      console.log("SDK response:", JSON.stringify(response).substring(0, 400));
-      globalThis.fetch = originalFetch;
+    // Convert to CLOB API format (matches SDK's orderToJson)
+    const sideStr = signedOrder.side === 0 || signedOrder.side === "BUY" ? "BUY" : "SELL";
+    const orderPayload = {
+      deferExec: false,
+      order: {
+        salt: parseInt(String(signedOrder.salt), 10),
+        maker: signedOrder.maker,
+        signer: signedOrder.signer,
+        taker: signedOrder.taker,
+        tokenId: signedOrder.tokenId,
+        makerAmount: signedOrder.makerAmount,
+        takerAmount: signedOrder.takerAmount,
+        side: sideStr,
+        expiration: signedOrder.expiration,
+        nonce: signedOrder.nonce,
+        feeRateBps: signedOrder.feeRateBps,
+        signatureType: signedOrder.signatureType,
+        signature: signedOrder.signature,
+      },
+      owner: storedCreds.apiKey,
+      orderType: "FAK",
+    };
 
-      if (response?.orderID || response?.success) {
-        return { submitted: true, result: response, finalPrice, tickSize: `${tickSize}`, via: "sdk-proxy" };
-      } else {
-        return { submitted: false, error: response?.error || response?.message || "Order rejected", finalPrice, result: response };
-      }
-    } catch (e) {
-      globalThis.fetch = originalFetch;
-      throw e;
+    // Build L2 HMAC headers for submission
+    const ts = Math.floor(Date.now() / 1000);
+    const orderBody = JSON.stringify(orderPayload);
+    const l2Sig = await buildPolyHmacSignature(storedCreds.secret, ts, "POST", "/order", orderBody);
+    const polyHeaders: Record<string, string> = {
+      POLY_ADDRESS: wallet.address,
+      POLY_SIGNATURE: l2Sig,
+      POLY_TIMESTAMP: `${ts}`,
+      POLY_API_KEY: storedCreds.apiKey,
+      POLY_PASSPHRASE: storedCreds.passphrase,
+      "Content-Type": "application/json",
+    };
+
+    console.log("Submitting order via proxy:", orderBody.substring(0, 300));
+
+    // Submit via proxy (bypasses geoblocking)
+    const result = await proxiedFetch(`${CLOB_HOST}/order`, {
+      method: "POST",
+      headers: polyHeaders,
+      body: orderBody,
+    });
+
+    console.log(`Order result [${result.status}]:`, JSON.stringify(result.data).substring(0, 300));
+
+    if (result.ok && (result.data?.orderID || result.data?.success)) {
+      return { submitted: true, result: result.data, finalPrice, tickSize: `${tickSize}`, via: "local-sign-proxy-submit" };
+    } else {
+      return { submitted: false, error: result.data?.error || result.data?.message || `Order rejected (${result.status})`, finalPrice, result: result.data };
     }
   } catch (e) {
     console.error("signAndSubmitOrder error:", e);
