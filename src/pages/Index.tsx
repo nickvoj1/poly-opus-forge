@@ -138,6 +138,7 @@ const Dashboard = () => {
           side: hypo.action === "BUY" ? "BUY" : "SELL",
           size: hypo.size,
           price,
+          market: hypo.market,
         },
       });
 
