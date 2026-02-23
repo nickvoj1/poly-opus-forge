@@ -653,7 +653,7 @@ serve(async (req) => {
           side,
           size,
           price,
-          negRisk || false,
+          resolvedNegRisk,
           storedCreds,
         );
         return json(result, result.error ? 400 : 200);
