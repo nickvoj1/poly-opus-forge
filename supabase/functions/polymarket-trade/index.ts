@@ -42,6 +42,40 @@ async function getL2Headers(
   };
 }
 
+// ── Fetch negRisk from Gamma API (not geoblocked) ──
+async function fetchNegRiskFromGamma(tokenId: string): Promise<boolean | null> {
+  try {
+    const res = await fetch(`https://gamma-api.polymarket.com/markets?clob_token_ids=${tokenId}&closed=false`);
+    if (!res.ok) return null;
+    const markets = await res.json();
+    if (markets.length > 0) {
+      const neg = markets[0].neg_risk;
+      console.log(`Gamma negRisk for token ${tokenId.substring(0, 12)}...: ${neg} (question: ${markets[0].question?.substring(0, 60)})`);
+      return neg === true || neg === "true";
+    }
+    // Try condition_id lookup
+    const res2 = await fetch(`https://gamma-api.polymarket.com/markets?active=true&limit=5`);
+    return null;
+  } catch (e) {
+    console.error("Gamma negRisk lookup error:", e);
+    return null;
+  }
+}
+
+// Helper: detect crypto up/down markets that are typically negRisk=true
+function isCryptoUpDownMarket(marketName?: string): boolean {
+  if (!marketName) return false;
+  const lower = marketName.toLowerCase();
+  const cryptoPatterns = [
+    /\b(btc|bitcoin|eth|ethereum|sol|solana|xrp|doge|bnb|ada|avax|matic|link|dot)\b/,
+    /\b(crypto|coin|token)\b/,
+  ];
+  const upDownPatterns = [/above|below|over|under|hit|reach|price|by .*(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/i];
+  const isCrypto = cryptoPatterns.some(p => p.test(lower));
+  const isUpDown = upDownPatterns.some(p => p.test(lower));
+  return isCrypto && isUpDown;
+}
+
 // ── Market Data Helpers ──
 async function getOrderbook(tokenId: string): Promise<any> {
   const res = await fetch(`${CLOB_HOST}/book?token_id=${tokenId}`);
@@ -218,15 +252,26 @@ async function signAndSubmitOrder(
     // Create ClobClient for local order signing
     const client = new ClobClient(CLOB_HOST, 137, wallet as any, creds, sigType, funderAddress);
 
-    // Fetch tick size, fee rate, and negRisk via proxy (CLOB is geoblocked from EU)
+    // Fetch tick size, fee rate, and negRisk via multiple sources
     let tickSize = 0.01;
     let feeRateBps = 0;
     let negRisk = _negRisk;
+
+    // 1. Try Gamma API first for negRisk (not geoblocked)
+    const gammaNegRisk = await fetchNegRiskFromGamma(tokenId);
+    if (gammaNegRisk !== null) {
+      negRisk = gammaNegRisk;
+      console.log(`negRisk from Gamma API: ${negRisk}`);
+    }
+
+    // 2. Fetch tick size and fee rate via proxy, and CLOB negRisk as fallback
     try {
       const [tickRes, feeRes, negRiskRes] = await Promise.all([
         proxiedFetch(`${CLOB_HOST}/tick-size?token_id=${tokenId}`, { method: "GET", headers: {} }),
         proxiedFetch(`${CLOB_HOST}/fee-rate?token_id=${tokenId}`, { method: "GET", headers: {} }),
-        proxiedFetch(`${CLOB_HOST}/neg-risk?token_id=${tokenId}`, { method: "GET", headers: {} }),
+        gammaNegRisk === null
+          ? proxiedFetch(`${CLOB_HOST}/neg-risk?token_id=${tokenId}`, { method: "GET", headers: {} })
+          : Promise.resolve({ ok: false, status: 0, data: {} }),
       ]);
       if (tickRes.ok && tickRes.data?.minimum_tick_size) {
         tickSize = parseFloat(tickRes.data.minimum_tick_size);
@@ -234,13 +279,14 @@ async function signAndSubmitOrder(
       if (feeRes.ok && feeRes.data?.base_fee !== undefined) {
         feeRateBps = feeRes.data.base_fee;
       }
-      if (negRiskRes.ok && negRiskRes.data?.neg_risk !== undefined) {
+      if (gammaNegRisk === null && negRiskRes.ok && negRiskRes.data?.neg_risk !== undefined) {
         negRisk = negRiskRes.data.neg_risk;
       }
-      console.log(`Market params: tickSize=${tickSize}, feeRateBps=${feeRateBps}, negRisk=${negRisk}`);
     } catch (e) {
       console.log("Market params lookup failed, using defaults");
     }
+
+    console.log(`Market params: tickSize=${tickSize}, feeRateBps=${feeRateBps}, negRisk=${negRisk}`);
 
     // Round price to tick
     const tickedPrice = Math.round(price / tickSize) * tickSize;
@@ -550,8 +596,15 @@ serve(async (req) => {
       case "sign-order":
       case "place-trade": {
         if (!POLY_WALLET_KEY) return json({ error: "Wallet private key not configured" }, 400);
-        const { tokenId, side, size, price, negRisk } = params;
+        const { tokenId, side, size, price, negRisk, market } = params;
         if (!tokenId || !side || !size || !price) return json({ error: "Missing: tokenId, side, size, price" }, 400);
+
+        // Default negRisk=true for crypto up/down markets if not explicitly set
+        let resolvedNegRisk = negRisk;
+        if (resolvedNegRisk === undefined || resolvedNegRisk === null) {
+          resolvedNegRisk = isCryptoUpDownMarket(market) ? true : false;
+          if (resolvedNegRisk) console.log(`Auto-detected crypto up/down market, forcing negRisk=true: ${market}`);
+        }
 
         // Strategy 1: Use relay server's /trade endpoint (it signs + submits from non-blocked region)
         let RELAY_URL = Deno.env.get("RELAY_SERVER_URL") || "";
@@ -600,7 +653,7 @@ serve(async (req) => {
           side,
           size,
           price,
-          negRisk || false,
+          resolvedNegRisk,
           storedCreds,
         );
         return json(result, result.error ? 400 : 200);
