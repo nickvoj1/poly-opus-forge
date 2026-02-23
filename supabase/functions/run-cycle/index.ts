@@ -218,14 +218,15 @@ async function executeTrade(
 
   // Call polymarket-trade edge function to place the order
   try {
-    const tradeRes = await fetch("https://poly-order-relay-production.up.railway.app/order", {
+    const tradeRes = await fetch(`${supabaseUrl}/functions/v1/polymarket-trade`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${supabaseKey}`,
+        apikey: supabaseKey,
       },
       body: JSON.stringify({
-        action: "sign-order",
+        action: "place-trade",
         tokenId,
         side: tradeSide,
         size: hypo.size,
