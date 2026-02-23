@@ -596,8 +596,15 @@ serve(async (req) => {
       case "sign-order":
       case "place-trade": {
         if (!POLY_WALLET_KEY) return json({ error: "Wallet private key not configured" }, 400);
-        const { tokenId, side, size, price, negRisk } = params;
+        const { tokenId, side, size, price, negRisk, market } = params;
         if (!tokenId || !side || !size || !price) return json({ error: "Missing: tokenId, side, size, price" }, 400);
+
+        // Default negRisk=true for crypto up/down markets if not explicitly set
+        let resolvedNegRisk = negRisk;
+        if (resolvedNegRisk === undefined || resolvedNegRisk === null) {
+          resolvedNegRisk = isCryptoUpDownMarket(market) ? true : false;
+          if (resolvedNegRisk) console.log(`Auto-detected crypto up/down market, forcing negRisk=true: ${market}`);
+        }
 
         // Strategy 1: Use relay server's /trade endpoint (it signs + submits from non-blocked region)
         let RELAY_URL = Deno.env.get("RELAY_SERVER_URL") || "";
