@@ -42,6 +42,40 @@ async function getL2Headers(
   };
 }
 
+// ── Fetch negRisk from Gamma API (not geoblocked) ──
+async function fetchNegRiskFromGamma(tokenId: string): Promise<boolean | null> {
+  try {
+    const res = await fetch(`https://gamma-api.polymarket.com/markets?clob_token_ids=${tokenId}&closed=false`);
+    if (!res.ok) return null;
+    const markets = await res.json();
+    if (markets.length > 0) {
+      const neg = markets[0].neg_risk;
+      console.log(`Gamma negRisk for token ${tokenId.substring(0, 12)}...: ${neg} (question: ${markets[0].question?.substring(0, 60)})`);
+      return neg === true || neg === "true";
+    }
+    // Try condition_id lookup
+    const res2 = await fetch(`https://gamma-api.polymarket.com/markets?active=true&limit=5`);
+    return null;
+  } catch (e) {
+    console.error("Gamma negRisk lookup error:", e);
+    return null;
+  }
+}
+
+// Helper: detect crypto up/down markets that are typically negRisk=true
+function isCryptoUpDownMarket(marketName?: string): boolean {
+  if (!marketName) return false;
+  const lower = marketName.toLowerCase();
+  const cryptoPatterns = [
+    /\b(btc|bitcoin|eth|ethereum|sol|solana|xrp|doge|bnb|ada|avax|matic|link|dot)\b/,
+    /\b(crypto|coin|token)\b/,
+  ];
+  const upDownPatterns = [/above|below|over|under|hit|reach|price|by .*(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/i];
+  const isCrypto = cryptoPatterns.some(p => p.test(lower));
+  const isUpDown = upDownPatterns.some(p => p.test(lower));
+  return isCrypto && isUpDown;
+}
+
 // ── Market Data Helpers ──
 async function getOrderbook(tokenId: string): Promise<any> {
   const res = await fetch(`${CLOB_HOST}/book?token_id=${tokenId}`);
