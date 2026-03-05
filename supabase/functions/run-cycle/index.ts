@@ -383,11 +383,12 @@ serve(async (req) => {
     const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
     const supabaseKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
-    // Step 0: Close any winning positions before new trades
+    // Step 0: Manage positions — take profit, stop loss, pre-expiry exits
     if (liveTrading) {
-      const closeResult = await closeWinningPositions(supabaseUrl, supabaseKey);
-      if (closeResult.closed > 0) {
-        console.log(`💰 Closed ${closeResult.closed} winning positions for $${closeResult.pnl.toFixed(2)} total profit`);
+      const mgmt = await managePositions(supabaseUrl, supabaseKey);
+      if (mgmt.actions.length > 0) {
+        console.log(`📋 Position management: ${mgmt.closed} closed, P&L: $${mgmt.pnl.toFixed(2)}`);
+        for (const a of mgmt.actions) console.log(`  ${a}`);
       }
     }
 
