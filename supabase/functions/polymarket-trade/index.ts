@@ -491,60 +491,40 @@ async function redeemPositions(
     const funderAddress = proxyAddress || wallet.address;
 
     if (proxyAddress && proxyAddress.toLowerCase() !== wallet.address.toLowerCase()) {
-      // Proxy (Safe) wallet — need to call execTransaction on the Safe
-      console.log(`🔄 Redeeming via Safe proxy ${proxyAddress} for condition ${conditionId.substring(0, 16)}...`);
+      // Polymarket uses a custom proxy, not Gnosis Safe.
+      // Try calling CTF redeemPositions directly from the proxy using its execute interface
+      console.log(`🔄 Redeeming via proxy ${proxyAddress} for condition ${conditionId.substring(0, 16)}...`);
 
-      const safeInterface = new ethers.utils.Interface([
-        "function execTransaction(address to, uint256 value, bytes data, uint8 operation, uint256 safeTxGas, uint256 baseGas, uint256 gasPrice, address gasToken, address payable refundReceiver, bytes signatures) returns (bool success)",
-        "function nonce() view returns (uint256)",
-        "function getTransactionHash(address to, uint256 value, bytes data, uint8 operation, uint256 safeTxGas, uint256 baseGas, uint256 gasPrice, address gasToken, address refundReceiver, uint256 _nonce) view returns (bytes32)",
+      // Polymarket proxy uses a simple execute(address,uint256,bytes) pattern
+      const proxyInterface = new ethers.utils.Interface([
+        "function execute(address to, uint256 value, bytes data) returns (bytes)",
       ]);
 
-      const safeContract = new ethers.Contract(proxyAddress, safeInterface, wallet);
-
-      // Get nonce
-      const nonce = await safeContract.nonce();
-
-      // Get transaction hash for signing
-      const txHash = await safeContract.getTransactionHash(
-        CTF_ADDRESS, 0, redeemData, 0, 0, 0, 0,
-        ethers.constants.AddressZero, ethers.constants.AddressZero, nonce,
-      );
-
-      // Sign the hash (EIP-191 style for Safe)
-      const sig = await wallet.signMessage(ethers.utils.arrayify(txHash));
-      // Convert to Safe signature format (v += 4 for eth_sign)
-      const sigBytes = ethers.utils.arrayify(sig);
-      sigBytes[64] += 4;
-      const safeSig = ethers.utils.hexlify(sigBytes);
-
-      // Execute the transaction
-      const tx = await safeContract.execTransaction(
-        CTF_ADDRESS, 0, redeemData, 0, 0, 0, 0,
-        ethers.constants.AddressZero, ethers.constants.AddressZero, safeSig,
-        { gasLimit: 500000 },
-      );
-
-      console.log(`📝 Redeem tx sent: ${tx.hash}`);
-      const receipt = await tx.wait();
-      console.log(`✅ Redeem confirmed: ${receipt.transactionHash} (gas: ${receipt.gasUsed.toString()})`);
-
-      return { success: true, txHash: receipt.transactionHash };
-    } else {
-      // Direct EOA wallet — call CTF contract directly
-      console.log(`🔄 Redeeming directly from EOA for condition ${conditionId.substring(0, 16)}...`);
-
-      const ctfContract = new ethers.Contract(CTF_ADDRESS, ctfInterface, wallet);
-      const tx = await ctfContract.redeemPositions(
-        USDC_E, PARENT_COLLECTION_ID, conditionId, INDEX_SETS,
-        { gasLimit: 300000 },
-      );
-
-      console.log(`📝 Redeem tx sent: ${tx.hash}`);
-      const receipt = await tx.wait();
-      console.log(`✅ Redeem confirmed: ${receipt.transactionHash} (gas: ${receipt.gasUsed.toString()})`);
-
-      return { success: true, txHash: receipt.transactionHash };
+      try {
+        const proxyContract = new ethers.Contract(proxyAddress, proxyInterface, wallet);
+        const tx = await proxyContract.execute(CTF_ADDRESS, 0, redeemData, { gasLimit: 500000 });
+        console.log(`📝 Redeem tx sent via proxy: ${tx.hash}`);
+        const receipt = await tx.wait();
+        console.log(`✅ Redeem confirmed: ${receipt.transactionHash} (gas: ${receipt.gasUsed.toString()})`);
+        return { success: true, txHash: receipt.transactionHash };
+      } catch (proxyErr: any) {
+        console.log(`⚠ Proxy execute failed: ${proxyErr.message}, trying direct EOA...`);
+        // Fallback: try direct CTF call from EOA (works if tokens are on EOA)
+        try {
+          const ctfContract = new ethers.Contract(CTF_ADDRESS, ctfInterface, wallet);
+          const tx = await ctfContract.redeemPositions(
+            USDC_E, PARENT_COLLECTION_ID, conditionId, INDEX_SETS,
+            { gasLimit: 300000 },
+          );
+          console.log(`📝 Redeem tx sent (EOA fallback): ${tx.hash}`);
+          const receipt = await tx.wait();
+          console.log(`✅ Redeem confirmed: ${receipt.transactionHash}`);
+          return { success: true, txHash: receipt.transactionHash };
+        } catch (eoaErr: any) {
+          console.error(`❌ Both proxy and EOA redeem failed`);
+          return { success: false, error: `Proxy: ${proxyErr.message} | EOA: ${eoaErr.message}` };
+        }
+      }
     }
   } catch (e) {
     console.error("Redeem error:", e);
