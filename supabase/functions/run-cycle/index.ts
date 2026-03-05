@@ -387,9 +387,37 @@ CRITICAL: ONLY trade CRYPTO markets ending SOON (<60 min). Use EXACT market ques
     parsed.cycle = parsed.cycle || cycle;
     parsed.bankroll = parsed.bankroll || bankroll;
     parsed.hypos = parsed.hypos || [];
+    parsed.sharpe = parsed.sharpe ?? 0;
+    parsed.mdd = parsed.mdd ?? 0;
+    parsed.rules = parsed.rules || [];
     parsed.log = parsed.log || "Cycle complete";
 
-    console.log(`🤖 AI returned ${parsed.hypos.length} trade ideas`);
+    // Server-side validation: filter out bad trades
+    const preFilterCount = parsed.hypos.length;
+    parsed.hypos = parsed.hypos.filter((h: any) => {
+      const price = h.price || 0;
+      if (price < 0.15 || price > 0.75) {
+        console.log(`🚫 Rejected ${h.market}: price ${price} outside 0.15-0.75 bounds`);
+        return false;
+      }
+      const edge = h.edge || 0;
+      if (edge < 0.08) {
+        console.log(`🚫 Rejected ${h.market}: edge ${edge} below 8% threshold`);
+        return false;
+      }
+      if (!h.market || typeof h.market !== "string") {
+        console.log(`🚫 Rejected trade: missing market name`);
+        return false;
+      }
+      return true;
+    });
+
+    if (preFilterCount !== parsed.hypos.length) {
+      console.log(`🔍 Validated: ${parsed.hypos.length}/${preFilterCount} trades passed filters`);
+      parsed.log += ` | Filtered: ${preFilterCount - parsed.hypos.length} rejected (price/edge bounds)`;
+    }
+
+    console.log(`🤖 AI returned ${parsed.hypos.length} valid trade ideas`);
 
     // Enrich hypos with token IDs from market data
     for (const h of parsed.hypos) {
