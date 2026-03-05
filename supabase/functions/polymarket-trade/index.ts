@@ -324,9 +324,8 @@ async function signAndSubmitOrder(
     // Round price to tick
     const tickedPrice = Math.round(price / tickSize) * tickSize;
     const finalPrice = Math.max(tickSize, Math.min(1 - tickSize, tickedPrice));
-    // Round size to ensure clean maker/taker amounts (max 2 decimal places for maker, 4 for taker)
-    // USDC amounts = size * 1e6, so size must produce clean integer USDC micros
-    const roundedSize = Math.floor(size * 100) / 100; // Round down to 2 decimal places
+    // Round size to whole number to ensure clean USDC amounts (max 2 decimal accuracy for maker)
+    const roundedSize = Math.max(1, Math.floor(size));
     const tradeSide = side === "BUY" ? ClobSide.BUY : ClobSide.SELL;
 
     console.log(`Signing order: ${side} $${roundedSize} @ $${finalPrice} (tick=${tickSize}, fee=${feeRateBps}, negRisk=${negRisk})`);
