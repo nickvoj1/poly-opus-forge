@@ -438,6 +438,97 @@ async function signAndSubmitOrder(
   }
 }
 
+// ── Redeem Winning Positions via CTF Contract ──
+async function redeemPositions(
+  walletPrivateKey: string,
+  proxyAddress: string | undefined,
+  conditionId: string,
+): Promise<{ success: boolean; txHash?: string; error?: string }> {
+  try {
+    const { ethers } = await import("https://esm.sh/ethers@5.7.2");
+    const pk = walletPrivateKey.startsWith("0x") ? walletPrivateKey : `0x${walletPrivateKey}`;
+    const wallet = new ethers.Wallet(pk, new ethers.providers.JsonRpcProvider("https://polygon-rpc.com"));
+
+    const CTF_ADDRESS = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045";
+    const USDC_E = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174";
+    const PARENT_COLLECTION_ID = ethers.constants.HashZero;
+    const INDEX_SETS = [1, 2]; // Redeem both YES and NO (only winner pays)
+
+    // Encode redeemPositions calldata
+    const ctfInterface = new ethers.utils.Interface([
+      "function redeemPositions(address collateralToken, bytes32 parentCollectionId, bytes32 conditionId, uint256[] indexSets)",
+    ]);
+    const redeemData = ctfInterface.encodeFunctionData("redeemPositions", [
+      USDC_E,
+      PARENT_COLLECTION_ID,
+      conditionId,
+      INDEX_SETS,
+    ]);
+
+    const funderAddress = proxyAddress || wallet.address;
+
+    if (proxyAddress && proxyAddress.toLowerCase() !== wallet.address.toLowerCase()) {
+      // Proxy (Safe) wallet — need to call execTransaction on the Safe
+      console.log(`🔄 Redeeming via Safe proxy ${proxyAddress} for condition ${conditionId.substring(0, 16)}...`);
+
+      const safeInterface = new ethers.utils.Interface([
+        "function execTransaction(address to, uint256 value, bytes data, uint8 operation, uint256 safeTxGas, uint256 baseGas, uint256 gasPrice, address gasToken, address payable refundReceiver, bytes signatures) returns (bool success)",
+        "function nonce() view returns (uint256)",
+        "function getTransactionHash(address to, uint256 value, bytes data, uint8 operation, uint256 safeTxGas, uint256 baseGas, uint256 gasPrice, address gasToken, address refundReceiver, uint256 _nonce) view returns (bytes32)",
+      ]);
+
+      const safeContract = new ethers.Contract(proxyAddress, safeInterface, wallet);
+
+      // Get nonce
+      const nonce = await safeContract.nonce();
+
+      // Get transaction hash for signing
+      const txHash = await safeContract.getTransactionHash(
+        CTF_ADDRESS, 0, redeemData, 0, 0, 0, 0,
+        ethers.constants.AddressZero, ethers.constants.AddressZero, nonce,
+      );
+
+      // Sign the hash (EIP-191 style for Safe)
+      const sig = await wallet.signMessage(ethers.utils.arrayify(txHash));
+      // Convert to Safe signature format (v += 4 for eth_sign)
+      const sigBytes = ethers.utils.arrayify(sig);
+      sigBytes[64] += 4;
+      const safeSig = ethers.utils.hexlify(sigBytes);
+
+      // Execute the transaction
+      const tx = await safeContract.execTransaction(
+        CTF_ADDRESS, 0, redeemData, 0, 0, 0, 0,
+        ethers.constants.AddressZero, ethers.constants.AddressZero, safeSig,
+        { gasLimit: 500000 },
+      );
+
+      console.log(`📝 Redeem tx sent: ${tx.hash}`);
+      const receipt = await tx.wait();
+      console.log(`✅ Redeem confirmed: ${receipt.transactionHash} (gas: ${receipt.gasUsed.toString()})`);
+
+      return { success: true, txHash: receipt.transactionHash };
+    } else {
+      // Direct EOA wallet — call CTF contract directly
+      console.log(`🔄 Redeeming directly from EOA for condition ${conditionId.substring(0, 16)}...`);
+
+      const ctfContract = new ethers.Contract(CTF_ADDRESS, ctfInterface, wallet);
+      const tx = await ctfContract.redeemPositions(
+        USDC_E, PARENT_COLLECTION_ID, conditionId, INDEX_SETS,
+        { gasLimit: 300000 },
+      );
+
+      console.log(`📝 Redeem tx sent: ${tx.hash}`);
+      const receipt = await tx.wait();
+      console.log(`✅ Redeem confirmed: ${receipt.transactionHash} (gas: ${receipt.gasUsed.toString()})`);
+
+      return { success: true, txHash: receipt.transactionHash };
+    }
+  } catch (e) {
+    console.error("Redeem error:", e);
+    return { success: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
 // ── Cancel Order via L2 Auth ──
 async function cancelOrder(
   apiKey: string,
@@ -895,6 +986,14 @@ serve(async (req) => {
         }
 
         return json({ results });
+      }
+
+      case "redeem-position": {
+        if (!POLY_WALLET_KEY) return json({ error: "Wallet private key not configured" }, 400);
+        const { conditionId } = params;
+        if (!conditionId) return json({ error: "Missing conditionId" }, 400);
+        const result = await redeemPositions(POLY_WALLET_KEY, POLY_PROXY_ADDRESS || undefined, conditionId);
+        return json(result, result.success ? 200 : 400);
       }
 
       default:
