@@ -513,12 +513,12 @@ STRATEGY: MULTI-TIMEFRAME MISPRICED ODDS + MOMENTUM
    - Market price is the YES probability. BUY = buy YES token (bet UP). SELL = buy NO token (bet DOWN).
    - NEVER buy YES when momentum is DOWN. NEVER buy NO when momentum is UP.
 
-4. STRICT PRICE BOUNDS BY TIMEFRAME:
-   - ≤5 min: BUY if price < 0.30, SELL if price > 0.70
-   - 5-30 min: BUY if price < 0.35, SELL if price > 0.65
-   - 30-60 min: BUY if price < 0.40, SELL if price > 0.60
-   - 1-2 hours: BUY if price < 0.42, SELL if price > 0.58
-   - 2-4 hours: BUY if price < 0.45, SELL if price > 0.55
+4. PRICE BOUNDS BY TIMEFRAME — trade when odds are even slightly mispriced:
+   - ≤5 min: BUY if price < 0.45, SELL if price > 0.55
+   - 5-30 min: BUY if price < 0.47, SELL if price > 0.53
+   - 30-60 min: BUY if price < 0.48, SELL if price > 0.52
+   - 1-2 hours: BUY if price < 0.48, SELL if price > 0.52
+   - 2-4 hours: BUY if price < 0.48, SELL if price > 0.52
 
 5. KELLY SIZING (VARIABLE):
    - Edge 10-15%: size = 3% of bankroll
@@ -613,12 +613,12 @@ CRITICAL RULES:
         return false;
       }
       const price = h.price || 0;
-      if (price < 0.10 || price > 0.85) {
+      if (price < 0.05 || price > 0.95) {
         console.log(`🚫 Rejected ${h.market}: price ${price} outside bounds`);
         return false;
       }
       const edge = h.edge || 0;
-      if (edge < 0.08) {
+      if (edge < 0.05) {
         console.log(`🚫 Rejected ${h.market}: edge ${edge} below 8% threshold`);
         return false;
       }
