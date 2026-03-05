@@ -351,7 +351,7 @@ async function signAndSubmitOrder(
 
     // Strategy B: Sign with SDK, submit manually via proxy
     const signedOrder = await client.createOrder(
-      { tokenID: tokenId, price: finalPrice, size, side: tradeSide, orderType: OrderType.FAK, feeRateBps },
+      { tokenID: tokenId, price: finalPrice, size: roundedSize, side: tradeSide, orderType: OrderType.FAK, feeRateBps },
       { tickSize: `${tickSize}`, negRisk },
     );
 
