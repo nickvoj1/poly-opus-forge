@@ -392,12 +392,37 @@ serve(async (req) => {
       }
     }
 
+    // Step 0.5: Fetch real wallet balance for live trading
+    let walletUsdc = bankroll;
+    if (liveTrading) {
+      try {
+        const balRes = await fetch(`${supabaseUrl}/functions/v1/polymarket-trade`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${supabaseKey}`,
+            apikey: supabaseKey,
+          },
+          body: JSON.stringify({ action: "get-wallet-balance" }),
+        });
+        const balData = await balRes.json();
+        if (typeof balData.usdc === "number") {
+          walletUsdc = balData.usdc;
+          console.log(`💰 Wallet: $${walletUsdc.toFixed(2)} USDC available`);
+        }
+      } catch (e) {
+        console.log("⚠ Could not fetch wallet balance, using provided bankroll");
+      }
+    }
+
+    const effectiveBankroll = liveTrading ? walletUsdc : bankroll;
+
     const [polyResult, cryptoData] = await Promise.all([fetchPolymarket(), fetchCryptoPrices()]);
 
     const polyData = polyResult.text;
     const marketsMap = polyResult.marketsMap;
 
-    const userMessage = `Cycle ${cycle}. Bankroll: $${bankroll}.
+    const userMessage = `Cycle ${cycle}. Bankroll: $${effectiveBankroll.toFixed(2)}.${liveTrading ? ` WALLET BALANCE: $${walletUsdc.toFixed(2)} USDC. Do NOT place trades exceeding this balance.` : ""}
 Trade markets ending ≤60 min. Use 5-MINUTE candle data for direction, NOT just 24h trend.
 
 LIVE DATA:
@@ -553,7 +578,8 @@ CRITICAL RULES:
       parsed.log += ` | Filtered: ${preFilterCount - parsed.hypos.length} rejected`;
     }
 
-    // Server-side Kelly sizing enforcement (reduced from previous aggressive levels)
+    // Server-side Kelly sizing enforcement using real wallet balance
+    let totalAllocated = 0;
     for (const h of parsed.hypos) {
       const edge = h.edge || 0;
       let kellyFraction: number;
@@ -564,14 +590,25 @@ CRITICAL RULES:
       } else {
         kellyFraction = 0.03;
       }
-      const kellySize = Math.round(bankroll * kellyFraction * 100) / 100;
+      const kellySize = Math.round(effectiveBankroll * kellyFraction * 100) / 100;
       const cappedSize = liveTrading ? Math.min(kellySize, 2.70) : kellySize;
-      if (cappedSize !== h.size) {
-        console.log(`📐 Kelly override: ${h.market} edge=${edge} → f=${kellyFraction} → $${h.size} → $${cappedSize}`);
+      // Ensure we don't exceed remaining wallet balance
+      const remainingBalance = liveTrading ? Math.max(0, walletUsdc - totalAllocated) : Infinity;
+      const finalSize = liveTrading ? Math.min(cappedSize, remainingBalance - 0.50) : cappedSize; // keep $0.50 buffer
+      if (finalSize < 0.50) {
+        console.log(`🚫 Skipping ${h.market}: insufficient balance (remaining: $${remainingBalance.toFixed(2)})`);
+        h._skip = true;
+        continue;
+      }
+      if (finalSize !== h.size) {
+        console.log(`📐 Kelly override: ${h.market} edge=${edge} → f=${kellyFraction} → $${h.size} → $${finalSize} (wallet: $${walletUsdc.toFixed(2)})`);
       }
       h.kelly_f = kellyFraction;
-      h.size = cappedSize;
+      h.size = finalSize;
+      totalAllocated += finalSize;
     }
+    // Remove skipped trades
+    parsed.hypos = parsed.hypos.filter((h: any) => !h._skip);
 
     console.log(`🤖 AI returned ${parsed.hypos.length} valid trade ideas`);
 
