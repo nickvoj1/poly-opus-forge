@@ -56,11 +56,9 @@ async function fetchNegRiskFromGamma(tokenId: string, marketName?: string): Prom
         if (neg !== undefined && neg !== null) {
           return neg === true || neg === "true";
         }
-        // Gamma returned the market but neg_risk is undefined — check the question text
-        if (isCryptoUpDownMarket(question)) {
-          console.log(`Gamma neg_risk undefined but question matches crypto pattern → forcing negRisk=true`);
-          return true;
-        }
+        // neg_risk is undefined — default to false (don't force true based on name patterns)
+        console.log(`Gamma neg_risk undefined → defaulting to false`);
+        return false;
       }
     }
 
@@ -75,27 +73,14 @@ async function fetchNegRiskFromGamma(tokenId: string, marketName?: string): Prom
         if (neg !== undefined && neg !== null) {
           return neg === true || neg === "true";
         }
-        if (isCryptoUpDownMarket(question)) {
-          console.log(`Gamma neg_risk undefined but question matches crypto pattern → forcing negRisk=true`);
-          return true;
-        }
+        console.log(`Gamma neg_risk undefined → defaulting to false`);
+        return false;
       }
-    }
-
-    // If market name was provided and matches crypto pattern, force true
-    if (marketName && isCryptoUpDownMarket(marketName)) {
-      console.log(`Gamma lookup returned no neg_risk, but market name matches crypto pattern → forcing negRisk=true`);
-      return true;
     }
 
     return null;
   } catch (e) {
     console.error("Gamma negRisk lookup error:", e);
-    // Even on error, if market name matches crypto pattern, force true
-    if (marketName && isCryptoUpDownMarket(marketName)) {
-      console.log(`Gamma lookup failed but market matches crypto pattern → forcing negRisk=true`);
-      return true;
-    }
     return null;
   }
 }
