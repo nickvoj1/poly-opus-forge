@@ -286,7 +286,7 @@ async function signAndSubmitOrder(
     const pk = walletPrivateKey.startsWith("0x") ? walletPrivateKey : `0x${walletPrivateKey}`;
     const wallet = new ethers.Wallet(pk);
     const funderAddress = proxyAddress || wallet.address;
-    const sigType = proxyAddress ? 2 : 0;
+    const sigType = proxyAddress ? 1 : 0; // 1 = POLY_PROXY (email/Magic login), 2 = Gnosis Safe
 
     const creds = {
       key: storedCreds.apiKey,
