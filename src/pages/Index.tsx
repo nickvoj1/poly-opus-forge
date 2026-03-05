@@ -1,5 +1,19 @@
 import { useCallback, useRef, useEffect, useState } from "react";
-import { Play, Square, RotateCcw, DollarSign, TrendingUp, BarChart3, AlertTriangle, Wifi, WifiOff, Zap, CheckCircle, XCircle, Clock } from "lucide-react";
+import {
+  Play,
+  Square,
+  RotateCcw,
+  DollarSign,
+  TrendingUp,
+  BarChart3,
+  AlertTriangle,
+  Wifi,
+  WifiOff,
+  Zap,
+  CheckCircle,
+  XCircle,
+  Clock,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { StatCard } from "@/components/StatCard";
 import { PnLChart } from "@/components/PnLChart";
@@ -12,10 +26,28 @@ import { Label } from "@/components/ui/label";
 
 const Dashboard = () => {
   const {
-    running, cycle, bankroll, sharpe, mdd, pnlHistory, hypos,
-    setRunning, addCycleResult, addLog, reset, systemPrompt,
-    liveTrading, setLiveTrading, positions, setPositions, apiConnected, setApiConnected,
-    bets, setBets, realPnL, setRealPnL,
+    running,
+    cycle,
+    bankroll,
+    sharpe,
+    mdd,
+    pnlHistory,
+    hypos,
+    setRunning,
+    addCycleResult,
+    addLog,
+    reset,
+    systemPrompt,
+    liveTrading,
+    setLiveTrading,
+    positions,
+    setPositions,
+    apiConnected,
+    setApiConnected,
+    bets,
+    setBets,
+    realPnL,
+    setRealPnL,
   } = useBotStore();
   const abortRef = useRef<AbortController | null>(null);
   const [walletBalance, setWalletBalance] = useState<{ usdc: number; matic: number } | null>(null);
@@ -24,7 +56,9 @@ const Dashboard = () => {
   useEffect(() => {
     if (!isSupabaseConfigured) {
       setApiConnected(false);
-      addLog("ERROR: Supabase config missing. Set VITE_SUPABASE_URL (or VITE_SUPABASE_PROJECT_ID) and VITE_SUPABASE_PUBLISHABLE_KEY.");
+      addLog(
+        "ERROR: Supabase config missing. Set VITE_SUPABASE_URL (or VITE_SUPABASE_PROJECT_ID) and VITE_SUPABASE_PUBLISHABLE_KEY.",
+      );
       toast.error("Supabase config missing. Open Lovable project settings and set env vars.");
     }
     checkApiConnection();
@@ -45,20 +79,24 @@ const Dashboard = () => {
         if (data.balance) {
           setWalletBalance(data.balance);
         }
-        addLog(`✓ Polymarket API: connected (wallet: ${data.walletAddress?.slice(0, 8)}... | USDC: $${data.balance?.usdc?.toFixed(2) || '0.00'})`);
+        addLog(
+          `✓ Polymarket API: connected (wallet: ${data.walletAddress?.slice(0, 8)}... | USDC: $${data.balance?.usdc?.toFixed(2) || "0.00"})`,
+        );
         // Fetch positions
         const { data: posData } = await supabase.functions.invoke("polymarket-trade", {
           body: { action: "get-positions" },
         });
         if (Array.isArray(posData)) {
-          setPositions(posData.map((p: any) => ({
-            market: p.title || p.market || p.asset || "Unknown",
-            tokenId: p.token_id || p.asset || "",
-            size: Number(p.size || 0),
-            avgPrice: Number(p.avg_price || 0),
-            currentPrice: Number(p.cur_price || p.price || 0),
-            pnl: Number(p.pnl || 0),
-          })));
+          setPositions(
+            posData.map((p: any) => ({
+              market: p.title || p.market || p.asset || "Unknown",
+              tokenId: p.token_id || p.asset || "",
+              size: Number(p.size || 0),
+              avgPrice: Number(p.avg_price || 0),
+              currentPrice: Number(p.cur_price || p.price || 0),
+              pnl: Number(p.pnl || 0),
+            })),
+          );
         }
       }
     } catch {
@@ -79,10 +117,10 @@ const Dashboard = () => {
         const state = useBotStore.getState();
         // Filter by mode: live bets when live, sim bets when sim
         const modeBets = data.filter((b: any) => b.is_live === state.liveTrading);
-        const resolvedBets = modeBets.filter((b: any) => b.pnl !== null && (b.status === 'won' || b.status === 'lost'));
+        const resolvedBets = modeBets.filter((b: any) => b.pnl !== null && (b.status === "won" || b.status === "lost"));
         const totalPnL = resolvedBets.reduce((sum: number, b: any) => sum + Number(b.pnl), 0);
         setRealPnL(totalPnL);
-        
+
         if (!state.liveTrading) {
           const realBankroll = 100 + totalPnL;
           useBotStore.setState({ bankroll: realBankroll });
@@ -98,10 +136,12 @@ const Dashboard = () => {
       if (!error && data?.resolved > 0) {
         // Calculate the P&L delta from newly resolved bets
         const cyclePnL = data.results.reduce((sum: number, r: any) => sum + (r.pnl || 0), 0);
-        
-        addLog(`🎯 Resolved ${data.resolved} bets: ${data.results.map((r: any) => `${r.market} → ${r.status} ($${r.pnl?.toFixed(2)})`).join(", ")}`);
+
+        addLog(
+          `🎯 Resolved ${data.resolved} bets: ${data.results.map((r: any) => `${r.market} → ${r.status} ($${r.pnl?.toFixed(2)})`).join(", ")}`,
+        );
         addLog(`💰 Resolution P&L: $${cyclePnL.toFixed(2)}`);
-        
+
         if (cyclePnL !== 0) {
           // Update bankroll with real resolution results
           const state = useBotStore.getState();
@@ -183,11 +223,15 @@ const Dashboard = () => {
             data.bankroll = postBal.usdc;
             setWalletBalance(postBal);
           }
-        } catch { /* use AI-reported bankroll */ }
+        } catch {
+          /* use AI-reported bankroll */
+        }
       }
 
       addCycleResult({ ...data, trades });
-      addLog(`Cycle ${data.cycle} complete. Bankroll: $${data.bankroll.toFixed(2)}${state.liveTrading ? " (real)" : ""}`);
+      addLog(
+        `Cycle ${data.cycle} complete. Bankroll: $${data.bankroll.toFixed(2)}${state.liveTrading ? " (real)" : ""}`,
+      );
 
       // Refresh positions after trades
       if (state.liveTrading) {
@@ -274,9 +318,7 @@ const Dashboard = () => {
             ) : (
               <WifiOff size={14} className="text-muted-foreground" />
             )}
-            <span className="text-xs font-mono text-muted-foreground">
-              {apiConnected ? "API" : "NO API"}
-            </span>
+            <span className="text-xs font-mono text-muted-foreground">{apiConnected ? "API" : "NO API"}</span>
           </div>
 
           {!running ? (
@@ -298,7 +340,9 @@ const Dashboard = () => {
 
       {/* Status indicator */}
       <div className="flex items-center gap-2">
-        <div className={`w-2 h-2 rounded-full ${running ? (liveTrading ? "bg-destructive animate-pulse" : "bg-primary animate-pulse-glow") : "bg-muted-foreground"}`} />
+        <div
+          className={`w-2 h-2 rounded-full ${running ? (liveTrading ? "bg-destructive animate-pulse" : "bg-primary animate-pulse-glow") : "bg-muted-foreground"}`}
+        />
         <span className="text-xs font-mono text-muted-foreground">
           {running ? (liveTrading ? "🔴 LIVE TRADING" : "RUNNING") : "IDLE"} • Cycle {cycle}
         </span>
@@ -316,23 +360,34 @@ const Dashboard = () => {
 
       {/* Stat cards */}
       <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
-        <StatCard 
-          label={liveTrading ? "Wallet (USDC)" : "Bankroll"} 
-          value={liveTrading && walletBalance ? walletBalance.usdc : bankroll} 
-          prefix="$" 
-          icon={<DollarSign size={16} />} 
-          variant={(liveTrading && walletBalance ? walletBalance.usdc : bankroll) >= 100 ? "positive" : "negative"} 
+        <StatCard
+          label={liveTrading ? "Wallet (USDC)" : "Bankroll"}
+          value={liveTrading && walletBalance ? walletBalance.usdc : bankroll}
+          prefix="$"
+          icon={<DollarSign size={16} />}
+          variant={(liveTrading && walletBalance ? walletBalance.usdc : bankroll) >= 100 ? "positive" : "negative"}
         />
-        <StatCard 
-          label={liveTrading ? "Live P&L" : "Sim P&L"} 
-          value={realPnL} 
-          prefix="$" 
-          icon={<TrendingUp size={16} />} 
-          variant={realPnL > 0 ? "positive" : realPnL < 0 ? "negative" : "default"} 
+        <StatCard
+          label={liveTrading ? "Live P&L" : "Sim P&L"}
+          value={realPnL}
+          prefix="$"
+          icon={<TrendingUp size={16} />}
+          variant={realPnL > 0 ? "positive" : realPnL < 0 ? "negative" : "default"}
         />
-        <StatCard label="Sharpe" value={sharpe} icon={<TrendingUp size={16} />} variant={sharpe > 0 ? "positive" : "default"} />
+        <StatCard
+          label="Sharpe"
+          value={sharpe}
+          icon={<TrendingUp size={16} />}
+          variant={sharpe > 0 ? "positive" : "default"}
+        />
         <StatCard label="Cycles" value={cycle} icon={<BarChart3 size={16} />} />
-        <StatCard label="Max DD" value={mdd} suffix="%" icon={<AlertTriangle size={16} />} variant={mdd > 10 ? "negative" : "default"} />
+        <StatCard
+          label="Max DD"
+          value={mdd}
+          suffix="%"
+          icon={<AlertTriangle size={16} />}
+          variant={mdd > 10 ? "negative" : "default"}
+        />
       </div>
 
       {/* Bet Resolution Tracking */}
@@ -342,13 +397,13 @@ const Dashboard = () => {
             <h3 className="text-sm font-mono text-primary">BET TRACKING</h3>
             <div className="flex items-center gap-3 text-xs font-mono">
               <span className="flex items-center gap-1 text-primary">
-                <CheckCircle size={12} /> {bets.filter(b => b.status === 'won').length} won
+                <CheckCircle size={12} /> {bets.filter((b) => b.status === "won").length} won
               </span>
               <span className="flex items-center gap-1 text-destructive">
-                <XCircle size={12} /> {bets.filter(b => b.status === 'lost').length} lost
+                <XCircle size={12} /> {bets.filter((b) => b.status === "lost").length} lost
               </span>
               <span className="flex items-center gap-1 text-muted-foreground">
-                <Clock size={12} /> {bets.filter(b => b.status === 'pending').length} pending
+                <Clock size={12} /> {bets.filter((b) => b.status === "pending").length} pending
               </span>
               <Button size="sm" variant="outline" className="h-6 text-xs font-mono" onClick={checkResolutions}>
                 Check Now
@@ -357,11 +412,14 @@ const Dashboard = () => {
           </div>
           <div className="space-y-1 max-h-[200px] overflow-y-auto">
             {bets.slice(0, 20).map((bet) => (
-              <div key={bet.id} className="flex items-center justify-between text-xs font-mono py-1.5 border-b border-border/50 last:border-0">
+              <div
+                key={bet.id}
+                className="flex items-center justify-between text-xs font-mono py-1.5 border-b border-border/50 last:border-0"
+              >
                 <div className="flex items-center gap-2 min-w-0">
-                  {bet.status === 'won' && <CheckCircle size={12} className="text-primary shrink-0" />}
-                  {bet.status === 'lost' && <XCircle size={12} className="text-destructive shrink-0" />}
-                  {bet.status === 'pending' && <Clock size={12} className="text-muted-foreground shrink-0" />}
+                  {bet.status === "won" && <CheckCircle size={12} className="text-primary shrink-0" />}
+                  {bet.status === "lost" && <XCircle size={12} className="text-destructive shrink-0" />}
+                  {bet.status === "pending" && <Clock size={12} className="text-muted-foreground shrink-0" />}
                   <span className="text-foreground/80 truncate max-w-[250px]">{bet.market}</span>
                 </div>
                 <div className="flex items-center gap-3 shrink-0">
@@ -388,7 +446,10 @@ const Dashboard = () => {
           <h3 className="text-sm font-mono text-primary mb-3">OPEN POSITIONS</h3>
           <div className="space-y-2">
             {positions.map((p, i) => (
-              <div key={i} className="flex items-center justify-between text-xs font-mono py-1 border-b border-border/50 last:border-0">
+              <div
+                key={i}
+                className="flex items-center justify-between text-xs font-mono py-1 border-b border-border/50 last:border-0"
+              >
                 <span className="text-foreground/80 truncate max-w-[200px]">{p.market}</span>
                 <div className="flex items-center gap-4">
                   <span className="text-muted-foreground">Size: {p.size}</span>
