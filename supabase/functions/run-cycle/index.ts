@@ -12,12 +12,17 @@ async function fetchPolymarket(): Promise<{ text: string; marketsMap: Record<str
     const now = new Date();
     const endMin = now.toISOString();
     const soon60 = new Date(now.getTime() + 60 * 60 * 1000).toISOString();
+    const soon4h = new Date(now.getTime() + 4 * 60 * 60 * 1000).toISOString();
 
-    // Fetch markets ending in ≤60 minutes + crypto-specific searches
+    // Fetch markets ending in ≤4 hours + crypto-specific searches
     const queries = [
-      // Primary: ending ≤60 min
+      // Primary: ending ≤60 min (highest priority)
       fetch(
         `https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=100&order=endDate&ascending=true&end_date_min=${endMin}&end_date_max=${soon60}`,
+      ),
+      // Extended: ending 1-4 hours (15-min and hourly markets)
+      fetch(
+        `https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=100&order=endDate&ascending=true&end_date_min=${soon60}&end_date_max=${soon4h}`,
       ),
       // Crypto-specific searches
       fetch(`https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=30&order=volume&ascending=false&tag=crypto`),
@@ -56,8 +61,8 @@ async function fetchPolymarket(): Promise<{ text: string; marketsMap: Record<str
       return `${m.question} | conditionId: ${m.conditionId || "?"} | price: ${m.outcomePrices} | vol: $${Math.round(m.volumeNum || 0)} | liq: $${Math.round(m.liquidityNum || 0)} | ENDS IN: ${minsLeft} min`;
     };
 
-    // Filter to markets ending ≤60 min
-    const maxMs = 60 * 60 * 1000;
+    // Filter to markets ending ≤4 hours
+    const maxMs = 4 * 60 * 60 * 1000;
     const eligible = allMarkets.filter((m) => {
       const end = m.endDate || m.end_date_iso;
       if (!end) return false;
@@ -66,20 +71,12 @@ async function fetchPolymarket(): Promise<{ text: string; marketsMap: Record<str
     });
 
     // Categorize by urgency
-    const under5 = eligible.filter((m) => {
-      const end = m.endDate || m.end_date_iso;
-      return new Date(end).getTime() - now.getTime() <= 5 * 60 * 1000;
-    });
-    const under30 = eligible.filter((m) => {
-      const end = m.endDate || m.end_date_iso;
-      const diff = new Date(end).getTime() - now.getTime();
-      return diff > 5 * 60 * 1000 && diff <= 30 * 60 * 1000;
-    });
-    const under60 = eligible.filter((m) => {
-      const end = m.endDate || m.end_date_iso;
-      const diff = new Date(end).getTime() - now.getTime();
-      return diff > 30 * 60 * 1000 && diff <= 60 * 60 * 1000;
-    });
+    const getDiff = (m: any) => new Date(m.endDate || m.end_date_iso).getTime() - now.getTime();
+    const under5 = eligible.filter((m) => getDiff(m) <= 5 * 60 * 1000);
+    const under30 = eligible.filter((m) => { const d = getDiff(m); return d > 5 * 60 * 1000 && d <= 30 * 60 * 1000; });
+    const under60 = eligible.filter((m) => { const d = getDiff(m); return d > 30 * 60 * 1000 && d <= 60 * 60 * 1000; });
+    const under2h = eligible.filter((m) => { const d = getDiff(m); return d > 60 * 60 * 1000 && d <= 2 * 60 * 60 * 1000; });
+    const under4h = eligible.filter((m) => { const d = getDiff(m); return d > 2 * 60 * 60 * 1000 && d <= 4 * 60 * 60 * 1000; });
 
     const byVol = (a: any, b: any) => (b.volumeNum || 0) - (a.volumeNum || 0);
 
@@ -93,14 +90,20 @@ async function fetchPolymarket(): Promise<{ text: string; marketsMap: Record<str
       under60.length
         ? `⏳ ENDING 30-60 MIN (${under60.length}):\n${under60.sort(byVol).slice(0, 10).map(formatMarket).join("\n")}`
         : "",
+      under2h.length
+        ? `🕑 ENDING 1-2 HOURS (${under2h.length}):\n${under2h.sort(byVol).slice(0, 10).map(formatMarket).join("\n")}`
+        : "",
+      under4h.length
+        ? `🕓 ENDING 2-4 HOURS (${under4h.length}):\n${under4h.sort(byVol).slice(0, 8).map(formatMarket).join("\n")}`
+        : "",
     ]
       .filter(Boolean)
       .join("\n\n");
 
-    console.log(`📊 Scanned ${allMarkets.length} unique markets → ${eligible.length} ending ≤60 min (${under5.length} ≤5m, ${under30.length} 5-30m, ${under60.length} 30-60m)`);
+    console.log(`📊 Scanned ${allMarkets.length} unique markets → ${eligible.length} ending ≤4h (${under5.length} ≤5m, ${under30.length} 5-30m, ${under60.length} 30-60m, ${under2h.length} 1-2h, ${under4h.length} 2-4h)`);
 
     return {
-      text: `POLYMARKET CRYPTO MARKETS ENDING ≤60 MIN (${eligible.length} total):\n${sections || "No active markets found."}`,
+      text: `POLYMARKET CRYPTO MARKETS ENDING ≤4 HOURS (${eligible.length} total):\n${sections || "No active markets found."}`,
       marketsMap,
     };
   } catch (e) {
@@ -109,40 +112,47 @@ async function fetchPolymarket(): Promise<{ text: string; marketsMap: Record<str
   }
 }
 
-// Fetch 5-minute candle data from Binance for short-term momentum
+// Fetch multi-timeframe candle data from Binance for momentum signals
 async function fetchCryptoPrices(): Promise<string> {
   const symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "DOGEUSDT", "ADAUSDT", "AVAXUSDT"];
   try {
     const results = await Promise.all(
       symbols.map(async (sym) => {
         try {
-          // Fetch both 24h ticker AND last 3 x 5-min candles
-          const [tickerRes, klinesRes] = await Promise.all([
+          // Fetch 24h ticker + 5m, 15m, and 1h candles for multi-timeframe momentum
+          const [tickerRes, klines5mRes, klines15mRes, klines1hRes] = await Promise.all([
             fetch(`https://api.binance.com/api/v3/ticker/24hr?symbol=${sym}`),
             fetch(`https://api.binance.com/api/v3/klines?symbol=${sym}&interval=5m&limit=3`),
+            fetch(`https://api.binance.com/api/v3/klines?symbol=${sym}&interval=15m&limit=3`),
+            fetch(`https://api.binance.com/api/v3/klines?symbol=${sym}&interval=1h&limit=3`),
           ]);
           const d = await tickerRes.json();
-          const klines = await klinesRes.json();
+          const klines5m = await klines5mRes.json();
+          const klines15m = await klines15mRes.json();
+          const klines1h = await klines1hRes.json();
 
-          // Parse 5m candles: [openTime, open, high, low, close, volume, ...]
-          let candle5m = "";
-          if (Array.isArray(klines) && klines.length >= 2) {
-            const prev = klines[klines.length - 2]; // last completed candle
-            const curr = klines[klines.length - 1]; // current candle
+          const parseCandles = (klines: any[], label: string) => {
+            if (!Array.isArray(klines) || klines.length < 2) return "";
+            const prev = klines[klines.length - 2];
+            const curr = klines[klines.length - 1];
             const prevClose = parseFloat(prev[4]);
             const currClose = parseFloat(curr[4]);
-            const change5m = ((currClose - prevClose) / prevClose * 100).toFixed(3);
+            const change = ((currClose - prevClose) / prevClose * 100).toFixed(3);
             const prevChange = ((prevClose - parseFloat(prev[1])) / parseFloat(prev[1]) * 100).toFixed(3);
-            candle5m = ` | 5m: ${change5m > "0" ? "+" : ""}${change5m}% (prev5m: ${prevChange > "0" ? "+" : ""}${prevChange}%)`;
-          }
+            return `${label}: ${Number(change) > 0 ? "+" : ""}${change}% (prev: ${Number(prevChange) > 0 ? "+" : ""}${prevChange}%)`;
+          };
 
-          return `${sym}: $${parseFloat(d.lastPrice).toFixed(2)} (24h: ${d.priceChangePercent > 0 ? "+" : ""}${d.priceChangePercent}%${candle5m}, vol=$${Math.round(parseFloat(d.quoteVolume) / 1e6)}M)`;
+          const c5m = parseCandles(klines5m, "5m");
+          const c15m = parseCandles(klines15m, "15m");
+          const c1h = parseCandles(klines1h, "1h");
+
+          return `${sym}: $${parseFloat(d.lastPrice).toFixed(2)} (24h: ${d.priceChangePercent > 0 ? "+" : ""}${d.priceChangePercent}% | ${c5m} | ${c15m} | ${c1h} | vol=$${Math.round(parseFloat(d.quoteVolume) / 1e6)}M)`;
         } catch {
           return `${sym}: error`;
         }
       }),
     );
-    return `CRYPTO PRICES (with 5-minute candle momentum):\n${results.join("\n")}`;
+    return `CRYPTO PRICES (multi-timeframe momentum: 5m, 15m, 1h candles):\n${results.join("\n")}`;
   } catch {
     return "CRYPTO PRICES: fetch error";
   }
@@ -458,7 +468,7 @@ serve(async (req) => {
       : "";
 
     const userMessage = `Cycle ${cycle}. Bankroll: $${effectiveBankroll.toFixed(2)}.${liveTrading ? ` WALLET BALANCE: $${walletUsdc.toFixed(2)} USDC. Do NOT place trades exceeding this balance.` : ""}
-Trade markets ending ≤60 min. Use 5-MINUTE candle data for direction, NOT just 24h trend.${existingMarketsStr}
+Trade markets ending ≤4 hours. Match candle timeframe to market duration: 5m candles for ≤15min markets, 15m candles for 15-60min markets, 1h candles for 1-4h markets.${existingMarketsStr}
 
 LIVE DATA:
 ${polyData}
@@ -481,34 +491,34 @@ ${systemPrompt}`;
             role: "system",
             content: `You are a disciplined quantitative trading engine for Polymarket. You MUST respond with valid JSON only. No markdown, no code blocks.
 
-STRATEGY: MISPRICED ODDS + SHORT-TERM MOMENTUM
+STRATEGY: MULTI-TIMEFRAME MISPRICED ODDS + MOMENTUM
 
-1. EDGE DETECTION (use 5-MINUTE candle data, NOT 24h):
-   - The "5m" field shows the LAST 5-minute price change. This is your PRIMARY signal for markets ending in ≤30 min.
-   - "prev5m" shows the candle before that — use for momentum confirmation.
-   - 24h change is SECONDARY — only use for markets ending 30-60 min.
-   - Edge = |TRUE_prob - market_price|. Minimum edge: 15% (0.15) for ≤5min markets, 10% for longer.
+1. TIMEFRAME-MATCHED EDGE DETECTION:
+   - Markets ending ≤15 min: Use 5m candle data as PRIMARY signal. Edge threshold: 15%.
+   - Markets ending 15-60 min: Use 15m candle data as PRIMARY signal. Edge threshold: 12%.
+   - Markets ending 1-4 hours: Use 1h candle data as PRIMARY signal. Edge threshold: 10%.
+   - Always confirm with the next shorter timeframe (e.g., 15m signal confirmed by 5m).
+   - Edge = |TRUE_prob - market_price|.
 
 2. DIRECTIONAL SIGNALS — FOLLOW MOMENTUM, NEVER GO CONTRARIAN:
-   - 5m POSITIVE + prev5m POSITIVE → strong UP → BUY (price must be < 0.30)
-   - 5m NEGATIVE + prev5m NEGATIVE → strong DOWN → SELL (price must be > 0.70)
-   - 5m POSITIVE + prev5m NEGATIVE → reversal UP → BUY only if price < 0.25 (weak signal)
-   - 5m NEGATIVE + prev5m POSITIVE → reversal DOWN → SELL only if price > 0.75 (weak signal)
+   - PRIMARY candle POSITIVE + confirmation POSITIVE → strong UP → BUY
+   - PRIMARY candle NEGATIVE + confirmation NEGATIVE → strong DOWN → SELL
+   - PRIMARY candle POSITIVE + confirmation NEGATIVE → reversal → BUY only if very mispriced
+   - PRIMARY candle NEGATIVE + confirmation POSITIVE → reversal → SELL only if very mispriced
    - Both flat (< ±0.05%) → NO SIGNAL → SKIP entirely
    
    CRITICAL: NEVER make "contrarian" bets. If momentum is DOWN, do NOT buy YES. If momentum is UP, do NOT buy NO.
-   The 5m candle tells you WHERE price is going. Trust it. Do not second-guess it.
 
 3. PRICE = PROBABILITY MAPPING:
-   - Market price is the YES probability. If price = 0.20, market says 20% chance of UP.
-   - BUY = buy YES token. You profit if outcome is YES (UP). Buy when momentum is UP and price < 0.30.
-   - SELL = buy NO token. You profit if outcome is NO (DOWN). Sell when momentum is DOWN and price > 0.70.
+   - Market price is the YES probability. BUY = buy YES token (bet UP). SELL = buy NO token (bet DOWN).
    - NEVER buy YES when momentum is DOWN. NEVER buy NO when momentum is UP.
 
-4. STRICT PRICE BOUNDS — ONLY TRADE MISPRICED ODDS:
-   - For ≤5 min markets: ONLY BUY if price < 0.30, ONLY SELL if price > 0.70
-   - For 5-30 min markets: ONLY BUY if price < 0.35, ONLY SELL if price > 0.65
-   - For 30-60 min markets: BUY if price < 0.40, SELL if price > 0.60
+4. STRICT PRICE BOUNDS BY TIMEFRAME:
+   - ≤5 min: BUY if price < 0.30, SELL if price > 0.70
+   - 5-30 min: BUY if price < 0.35, SELL if price > 0.65
+   - 30-60 min: BUY if price < 0.40, SELL if price > 0.60
+   - 1-2 hours: BUY if price < 0.42, SELL if price > 0.58
+   - 2-4 hours: BUY if price < 0.45, SELL if price > 0.55
 
 5. KELLY SIZING (VARIABLE):
    - Edge 10-15%: size = 3% of bankroll
@@ -516,9 +526,7 @@ STRATEGY: MISPRICED ODDS + SHORT-TERM MOMENTUM
    - Edge 25%+: size = 12% of bankroll (max)
    - Live mode hard cap: $2.70 per trade.
 
-6. ACTIONS:
-   - BUY = buy YES token (bet UP). ONLY when 5m momentum is UP and price is LOW.
-   - SELL = buy NO token (bet DOWN). ONLY when 5m momentum is DOWN and price is HIGH.
+6. PRIORITY: Prefer shorter-duration markets (more edge, faster resolution). Only trade 1-4h markets if they show strong multi-timeframe alignment AND significant mispricing.
 
 7. OUTPUT FORMAT (all fields required):
    {"cycle":N, "bankroll":N, "sharpe":N, "mdd":N, "hypos":[...], "rules":["rule1","rule2"], "log":"summary"}
@@ -531,12 +539,14 @@ STRATEGY: MISPRICED ODDS + SHORT-TERM MOMENTUM
    - "price": entry price
    - "edge": calculated edge as decimal
    - "kelly_f": fraction used
-   - "reasoning": MUST state: 1) 5m direction, 2) prev5m direction, 3) why price is mispriced vs momentum
+   - "timeframe": market duration category (e.g., "5m", "15m", "1h", "2h")
+   - "reasoning": MUST state: 1) which candle timeframe used, 2) direction + confirmation, 3) why price is mispriced
 
 CRITICAL RULES:
-- FOLLOW MOMENTUM. Never go contrarian. UP momentum = BUY. DOWN momentum = SELL.
+- FOLLOW MOMENTUM. Never go contrarian.
+- Match candle timeframe to market duration.
 - ONLY trade CLEARLY mispriced odds. If in doubt, SKIP.
-- If no markets are mispriced enough, return EMPTY hypos. It's better to skip than lose.
+- If no markets are mispriced enough, return EMPTY hypos.
 - Use EXACT market question in "market" field.`,
           },
           { role: "user", content: userMessage },
