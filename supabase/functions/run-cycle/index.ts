@@ -271,7 +271,7 @@ KELLY CRITERION STRATEGY (Target: 250% daily return):
 
 3. MARKET SELECTION:
    - ONLY CRYPTO markets. Ignore ALL non-crypto (politics, sports, weather, etc.).
-   - ONLY markets ending SOON: <10 min ideal, <60 min acceptable. Do NOT trade markets ending in hours.
+   - ONLY markets ending in ≤5 MINUTES. Do NOT trade ANY market ending later than 5 min.
    - ONLY high-volume markets (volume > $10,000 or liquidity > $5,000).
    - STRICT PRICE BOUNDS: Only trade sides priced between 0.15 and 0.75. REJECT any trade outside this range.
    - Parse "outcomePrices" as "[YesPrice, NoPrice]". Choose the side within 0.15-0.75.
