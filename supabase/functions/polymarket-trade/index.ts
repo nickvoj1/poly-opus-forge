@@ -381,7 +381,7 @@ async function signAndSubmitOrder(
     const orderBody = JSON.stringify(orderPayload);
     const l2Sig = await buildPolyHmacSignature(storedCreds.secret, ts, "POST", "/order", orderBody);
     const polyHeaders: Record<string, string> = {
-      POLY_ADDRESS: funderAddress,
+      POLY_ADDRESS: wallet.address,
       POLY_SIGNATURE: l2Sig,
       POLY_TIMESTAMP: `${ts}`,
       POLY_API_KEY: storedCreds.apiKey,
