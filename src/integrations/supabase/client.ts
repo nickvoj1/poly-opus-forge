@@ -2,13 +2,29 @@
 import { createClient } from '@supabase/supabase-js';
 import type { Database } from './types';
 
-const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
-const SUPABASE_PUBLISHABLE_KEY = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
+const env = import.meta.env as Record<string, string | undefined>;
+const projectId = env.VITE_SUPABASE_PROJECT_ID?.trim();
+const derivedUrl = projectId ? `https://${projectId}.supabase.co` : undefined;
+
+const SUPABASE_URL = env.VITE_SUPABASE_URL?.trim() || derivedUrl;
+const SUPABASE_PUBLISHABLE_KEY = env.VITE_SUPABASE_PUBLISHABLE_KEY?.trim() || env.VITE_SUPABASE_ANON_KEY?.trim();
+const MISSING_CONFIG_MESSAGE =
+  'Missing Supabase config. Set VITE_SUPABASE_URL (or VITE_SUPABASE_PROJECT_ID) and VITE_SUPABASE_PUBLISHABLE_KEY (or VITE_SUPABASE_ANON_KEY).';
+
+export const isSupabaseConfigured = Boolean(SUPABASE_URL && SUPABASE_PUBLISHABLE_KEY);
+
+if (!isSupabaseConfigured) {
+  console.error(MISSING_CONFIG_MESSAGE);
+}
+
+// Keep app booting even when config is missing, so UI can show actionable errors.
+const SAFE_SUPABASE_URL = SUPABASE_URL || 'https://invalid.supabase.co';
+const SAFE_SUPABASE_PUBLISHABLE_KEY = SUPABASE_PUBLISHABLE_KEY || 'invalid-publishable-key';
 
 // Import the supabase client like this:
 // import { supabase } from "@/integrations/supabase/client";
 
-export const supabase = createClient<Database>(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, {
+export const supabase = createClient<Database>(SAFE_SUPABASE_URL, SAFE_SUPABASE_PUBLISHABLE_KEY, {
   auth: {
     storage: localStorage,
     persistSession: true,
