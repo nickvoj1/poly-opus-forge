@@ -300,7 +300,7 @@ KELLY CRITERION STRATEGY (Target: 250% daily return):
    - "mdd": max drawdown % from peak bankroll. If cycle 1, set to 0.
    - "rules": list 2-4 key rules/observations driving this cycle's decisions.
 
-CRITICAL: ONLY trade CRYPTO markets ending SOON (<60 min). Use EXACT market question in "market" field. Variable sizing is MANDATORY.`,
+CRITICAL: ONLY trade CRYPTO markets ending in ≤5 MINUTES. Use EXACT market question in "market" field. Variable sizing is MANDATORY. If no markets end in ≤5 min, return empty hypos.`,
           },
           { role: "user", content: userMessage },
         ],
