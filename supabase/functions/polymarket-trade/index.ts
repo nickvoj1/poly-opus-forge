@@ -352,21 +352,22 @@ async function signAndSubmitOrder(
 
     console.log("Signed order side:", signedOrder.side, typeof signedOrder.side, "| feeRateBps:", signedOrder.feeRateBps, "| signatureType:", signedOrder.signatureType);
 
-    // Convert to CLOB API format (matches SDK's orderToJson — all numeric fields as strings)
+    // Convert to CLOB API format (matches SDK's orderToJson exactly)
     const sideStr = signedOrder.side === 0 || signedOrder.side === "BUY" ? "BUY" : "SELL";
     const orderPayload = {
+      deferExec: false,
       order: {
-        salt: String(signedOrder.salt),
+        salt: Number.parseInt(String(signedOrder.salt), 10),
         maker: signedOrder.maker,
         signer: signedOrder.signer,
         taker: signedOrder.taker,
         tokenId: signedOrder.tokenId,
-        makerAmount: String(signedOrder.makerAmount),
-        takerAmount: String(signedOrder.takerAmount),
+        makerAmount: signedOrder.makerAmount,
+        takerAmount: signedOrder.takerAmount,
         side: sideStr,
-        expiration: String(signedOrder.expiration),
-        nonce: String(signedOrder.nonce),
-        feeRateBps: String(signedOrder.feeRateBps),
+        expiration: signedOrder.expiration,
+        nonce: signedOrder.nonce,
+        feeRateBps: signedOrder.feeRateBps,
         signatureType: signedOrder.signatureType,
         signature: signedOrder.signature,
       },
