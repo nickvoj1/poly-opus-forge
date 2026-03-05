@@ -622,12 +622,13 @@ CRITICAL RULES:
         if (insertErr) console.error(`Failed to save bet for ${hypo.market}:`, insertErr);
       }
 
-      // Wait 45 seconds for GTC orders to fill, then cancel any remaining open orders
+      // Wait 10 seconds for GTC orders to fill, then cancel unfilled ones
+      // Short wait because most markets are 5-15 min — can't afford to wait long
       if (orderIds.length > 0) {
-        console.log(`⏳ Waiting 45s for ${orderIds.length} GTC orders to fill...`);
-        await new Promise((r) => setTimeout(r, 45000));
+        console.log(`⏳ Waiting 10s for ${orderIds.length} GTC orders to fill...`);
+        await new Promise((r) => setTimeout(r, 10000));
 
-        // Cancel all open orders (cleaner than tracking individual fills)
+        // Cancel all open orders to prevent stale positions
         try {
           const cancelRes = await fetch(`${supabaseUrl}/functions/v1/polymarket-trade`, {
             method: "POST",
