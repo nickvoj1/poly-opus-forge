@@ -335,11 +335,11 @@ async function signAndSubmitOrder(
 
     // Strategy A: Try using SDK's createAndPostOrder directly (handles serialization correctly)
     try {
-      console.log("Attempting SDK createAndPostOrder (direct)...");
+      console.log("Attempting SDK createAndPostOrder (direct) with GTC...");
       const sdkResult = await client.createAndPostOrder(
         { tokenID: tokenId, price: finalPrice, size: roundedSize, side: tradeSide, feeRateBps },
         { tickSize: `${tickSize}`, negRisk },
-        OrderType.FAK,
+        OrderType.GTC,
       );
       console.log("SDK postOrder result:", JSON.stringify(sdkResult).substring(0, 300));
       if (sdkResult?.orderID || sdkResult?.success) {
@@ -353,7 +353,7 @@ async function signAndSubmitOrder(
 
     // Strategy B: Sign with SDK, submit manually via proxy
     const signedOrder = await client.createOrder(
-      { tokenID: tokenId, price: finalPrice, size: roundedSize, side: tradeSide, orderType: OrderType.FAK, feeRateBps },
+      { tokenID: tokenId, price: finalPrice, size: roundedSize, side: tradeSide, orderType: OrderType.GTC, feeRateBps },
       { tickSize: `${tickSize}`, negRisk },
     );
 
@@ -370,8 +370,8 @@ async function signAndSubmitOrder(
 
     // Use SDK's postOrder method (handles serialization correctly)
     try {
-      console.log("Trying SDK postOrder with signed order...");
-      const postResult = await client.postOrder(signedOrder, OrderType.FAK);
+      console.log("Trying SDK postOrder with signed order (GTC)...");
+      const postResult = await client.postOrder(signedOrder, OrderType.GTC);
       console.log("SDK postOrder result:", JSON.stringify(postResult).substring(0, 300));
       if (postResult?.orderID || postResult?.success) {
         return { submitted: true, result: postResult, finalPrice, tickSize: `${tickSize}`, via: "sdk-postOrder" };
@@ -400,7 +400,7 @@ async function signAndSubmitOrder(
         signature: signedOrder.signature,
       },
       owner: storedCreds.apiKey,
-      orderType: "FAK",
+      orderType: "GTC",
     };
 
     console.log("Order payload owner:", orderPayload.owner, "maker:", orderPayload.order.maker, "signer:", orderPayload.order.signer);
@@ -436,6 +436,48 @@ async function signAndSubmitOrder(
     console.error("signAndSubmitOrder error:", e);
     return { error: e instanceof Error ? e.message : String(e) };
   }
+}
+
+// ── Cancel Order via L2 Auth ──
+async function cancelOrder(
+  apiKey: string,
+  secret: string,
+  passphrase: string,
+  orderId: string,
+  walletAddress?: string,
+): Promise<any> {
+  const ts = Math.floor(Date.now() / 1000);
+  const body = JSON.stringify({ orderID: orderId });
+  const headers = await getL2Headers(apiKey, secret, passphrase, ts, "DELETE", "/order", body, walletAddress);
+  const res = await fetch(`${CLOB_HOST}/order`, {
+    method: "DELETE",
+    headers: { ...headers, "Content-Type": "application/json" },
+    body,
+  });
+  const text = await res.text();
+  let data;
+  try { data = JSON.parse(text); } catch { data = { raw: text }; }
+  console.log(`Cancel order ${orderId}: [${res.status}] ${text.substring(0, 200)}`);
+  return { ok: res.ok, status: res.status, data };
+}
+
+async function cancelAllOrders(
+  apiKey: string,
+  secret: string,
+  passphrase: string,
+  walletAddress?: string,
+): Promise<any> {
+  const ts = Math.floor(Date.now() / 1000);
+  const headers = await getL2Headers(apiKey, secret, passphrase, ts, "DELETE", "/cancel-all", undefined, walletAddress);
+  const res = await fetch(`${CLOB_HOST}/cancel-all`, {
+    method: "DELETE",
+    headers: { ...headers, "Content-Type": "application/json" },
+  });
+  const text = await res.text();
+  let data;
+  try { data = JSON.parse(text); } catch { data = { raw: text }; }
+  console.log(`Cancel all orders: [${res.status}] ${text.substring(0, 200)}`);
+  return { ok: res.ok, status: res.status, data };
 }
 
 // ── L2-authenticated API calls ──
@@ -670,6 +712,18 @@ serve(async (req) => {
         if (!POLY_API_KEY || !POLY_SECRET || !POLY_PASSPHRASE) return json({ error: "API creds missing" }, 400);
         return json(await getTradeHistory(POLY_API_KEY, POLY_SECRET, POLY_PASSPHRASE, clobAuthAddress));
 
+      case "cancel-order": {
+        if (!POLY_API_KEY || !POLY_SECRET || !POLY_PASSPHRASE) return json({ error: "API creds missing" }, 400);
+        const { orderId } = params;
+        if (!orderId) return json({ error: "Missing orderId" }, 400);
+        return json(await cancelOrder(POLY_API_KEY, POLY_SECRET, POLY_PASSPHRASE, orderId, clobAuthAddress));
+      }
+
+      case "cancel-all-orders": {
+        if (!POLY_API_KEY || !POLY_SECRET || !POLY_PASSPHRASE) return json({ error: "API creds missing" }, 400);
+        return json(await cancelAllOrders(POLY_API_KEY, POLY_SECRET, POLY_PASSPHRASE, clobAuthAddress));
+      }
+
       case "sign-order":
       case "place-trade": {
         if (!POLY_WALLET_KEY) return json({ error: "Wallet private key not configured" }, 400);
@@ -697,7 +751,7 @@ serve(async (req) => {
             const relayRes = await fetch(`${RELAY_URL}/trade`, {
               method: "POST",
               headers: relayHeaders,
-              body: JSON.stringify({ tokenId, side, amount: size, price, orderType: "FAK" }),
+              body: JSON.stringify({ tokenId, side, amount: size, price, orderType: "GTC" }),
             });
             const relayResult = await relayRes.json();
             console.log(`Relay /trade response [${relayRes.status}]:`, JSON.stringify(relayResult).substring(0, 300));
