@@ -26,7 +26,6 @@ const Dashboard = () => {
       setApiConnected(false);
       addLog("ERROR: Supabase config missing. Set VITE_SUPABASE_URL (or VITE_SUPABASE_PROJECT_ID) and VITE_SUPABASE_PUBLISHABLE_KEY.");
       toast.error("Supabase config missing. Open Lovable project settings and set env vars.");
-      return;
     }
     checkApiConnection();
     fetchBets();
@@ -121,12 +120,6 @@ const Dashboard = () => {
   }, [addLog, fetchBets]);
 
   const runCycle = useCallback(async () => {
-    if (!isSupabaseConfigured) {
-      addLog("ERROR: Supabase is not configured.");
-      toast.error("Supabase is not configured.");
-      return false;
-    }
-
     const state = useBotStore.getState();
 
     // In live mode, fetch real wallet balance to use as bankroll
