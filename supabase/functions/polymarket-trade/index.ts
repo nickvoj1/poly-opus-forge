@@ -277,6 +277,7 @@ async function signAndSubmitOrder(
   price: number,
   _negRisk = false,
   storedCreds?: { apiKey: string; secret: string; passphrase: string },
+  marketName?: string,
 ): Promise<any> {
   if (!storedCreds) return { error: "API credentials required for local signing" };
 
@@ -301,11 +302,15 @@ async function signAndSubmitOrder(
     let feeRateBps = 0;
     let negRisk = _negRisk;
 
-    // 1. Try Gamma API first for negRisk (not geoblocked)
-    const gammaNegRisk = await fetchNegRiskFromGamma(tokenId);
+    // 1. Try Gamma API first for negRisk (not geoblocked) — also pass market name for pattern matching
+    const gammaNegRisk = await fetchNegRiskFromGamma(tokenId, marketName);
     if (gammaNegRisk !== null) {
       negRisk = gammaNegRisk;
       console.log(`negRisk from Gamma API: ${negRisk}`);
+    } else if (isCryptoUpDownMarket(marketName)) {
+      // Gamma returned null but market name matches crypto pattern
+      negRisk = true;
+      console.log(`negRisk forced true via market name pattern: "${marketName?.substring(0, 50)}"`);
     }
 
     // 2. Fetch tick size and fee rate via proxy, and CLOB negRisk as fallback
