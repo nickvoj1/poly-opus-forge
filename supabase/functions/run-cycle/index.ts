@@ -228,7 +228,7 @@ serve(async (req) => {
     const marketsMap = polyResult.marketsMap;
 
     const userMessage = `Cycle ${cycle}. Bankroll: $${bankroll}.
-⚡ LIVE TRADING MODE: Aggressive Kelly sizing. Max $2.70 per trade (15% bankroll).
+⚡ ONLY trade markets ending in ≤5 MINUTES. Aggressive Kelly sizing. Max $2.70 per trade.
 
 LIVE DATA:
 ${polyData}
