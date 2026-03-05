@@ -6,8 +6,17 @@ const env = import.meta.env as Record<string, string | undefined>;
 const projectId = env.VITE_SUPABASE_PROJECT_ID?.trim();
 const derivedUrl = projectId ? `https://${projectId}.supabase.co` : undefined;
 
-const SUPABASE_URL = env.VITE_SUPABASE_URL?.trim() || derivedUrl;
-const SUPABASE_PUBLISHABLE_KEY = env.VITE_SUPABASE_PUBLISHABLE_KEY?.trim() || env.VITE_SUPABASE_ANON_KEY?.trim();
+const SUPABASE_URL =
+  env.VITE_SUPABASE_URL?.trim() ||
+  env.NEXT_PUBLIC_SUPABASE_URL?.trim() ||
+  env.SUPABASE_URL?.trim() ||
+  derivedUrl;
+const SUPABASE_PUBLISHABLE_KEY =
+  env.VITE_SUPABASE_PUBLISHABLE_KEY?.trim() ||
+  env.VITE_SUPABASE_ANON_KEY?.trim() ||
+  env.NEXT_PUBLIC_SUPABASE_ANON_KEY?.trim() ||
+  env.SUPABASE_PUBLISHABLE_KEY?.trim() ||
+  env.SUPABASE_ANON_KEY?.trim();
 const MISSING_CONFIG_MESSAGE =
   'Missing Supabase config. Set VITE_SUPABASE_URL (or VITE_SUPABASE_PROJECT_ID) and VITE_SUPABASE_PUBLISHABLE_KEY (or VITE_SUPABASE_ANON_KEY).';
 
