@@ -324,8 +324,11 @@ async function signAndSubmitOrder(
     // Round price to tick
     const tickedPrice = Math.round(price / tickSize) * tickSize;
     const finalPrice = Math.max(tickSize, Math.min(1 - tickSize, tickedPrice));
-    // Round size to whole number to ensure clean USDC amounts (max 2 decimal accuracy for maker)
-    const roundedSize = Math.max(1, Math.floor(size));
+    // Ensure order value (price × size) meets Polymarket's $1 minimum
+    // Then round size to whole number for clean USDC amounts (max 2 decimal accuracy for maker)
+    const minSizeForValue = Math.ceil(1 / finalPrice); // minimum size so price*size >= $1
+    const roundedSize = Math.max(minSizeForValue, Math.floor(size));
+    console.log(`Size calc: raw=${size}, minForValue=${minSizeForValue}, final=${roundedSize} (value=$${(roundedSize * finalPrice).toFixed(2)})`);
     const tradeSide = side === "BUY" ? ClobSide.BUY : ClobSide.SELL;
 
     console.log(`Signing order: ${side} $${roundedSize} @ $${finalPrice} (tick=${tickSize}, fee=${feeRateBps}, negRisk=${negRisk})`);

@@ -214,7 +214,14 @@ async function executeTrade(
     }
   } catch {}
 
-  console.log(`🔄 Executing: ${tradeSide} ${hypo.size} of ${hypo.market} @ $${price.toFixed(4)}`);
+  // Ensure order value meets Polymarket's $1 minimum
+  const minSize = Math.ceil(1 / price);
+  const adjustedSize = Math.max(hypo.size, minSize);
+  if (adjustedSize !== hypo.size) {
+    console.log(`📐 Size adjusted: ${hypo.size} → ${adjustedSize} (min value $1 at price $${price.toFixed(4)})`);
+  }
+
+  console.log(`🔄 Executing: ${tradeSide} ${adjustedSize} of ${hypo.market} @ $${price.toFixed(4)}`);
 
   // Call polymarket-trade edge function to place the order
   try {
@@ -229,7 +236,7 @@ async function executeTrade(
         action: "place-trade",
         tokenId,
         side: tradeSide,
-        size: hypo.size,
+        size: adjustedSize,
         price,
       }),
     });
