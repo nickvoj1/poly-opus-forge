@@ -490,10 +490,12 @@ async function redeemPositions(
 
     const funderAddress = proxyAddress || wallet.address;
 
-    // Get current gas price for Polygon
+    // Get current gas price for Polygon — enforce minimum 30 gwei tip (network requires ~25 gwei)
     const feeData = await provider.getFeeData();
-    const maxPriorityFee = feeData.maxPriorityFeePerGas || ethers.utils.parseUnits("30", "gwei");
-    const maxFee = feeData.maxFeePerGas || ethers.utils.parseUnits("100", "gwei");
+    const minTip = ethers.utils.parseUnits("35", "gwei");
+    const minMax = ethers.utils.parseUnits("150", "gwei");
+    const maxPriorityFee = feeData.maxPriorityFeePerGas && feeData.maxPriorityFeePerGas.gt(minTip) ? feeData.maxPriorityFeePerGas : minTip;
+    const maxFee = feeData.maxFeePerGas && feeData.maxFeePerGas.gt(minMax) ? feeData.maxFeePerGas : minMax;
     const gasOverrides = { gasLimit: 500000, maxPriorityFeePerGas: maxPriorityFee, maxFeePerGas: maxFee };
     console.log(`⛽ Gas: maxPriority=${ethers.utils.formatUnits(maxPriorityFee, "gwei")}gwei, maxFee=${ethers.utils.formatUnits(maxFee, "gwei")}gwei`);
 
