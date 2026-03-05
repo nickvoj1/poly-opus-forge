@@ -244,16 +244,16 @@ async function executeTrade(
   }
 }
 
-// Check and close winning positions (sell when in profit)
-async function closeWinningPositions(
+// Manage all open positions: take-profit, stop-loss, pre-expiry exit
+async function managePositions(
   supabaseUrl: string,
   supabaseKey: string,
-): Promise<{ closed: number; pnl: number }> {
+): Promise<{ closed: number; pnl: number; actions: string[] }> {
   let closed = 0;
   let totalPnl = 0;
+  const actions: string[] = [];
 
   try {
-    // Get current positions via polymarket-trade
     const posRes = await fetch(`${supabaseUrl}/functions/v1/polymarket-trade`, {
       method: "POST",
       headers: {
@@ -265,59 +265,105 @@ async function closeWinningPositions(
     });
 
     const positions = await posRes.json();
-    if (!Array.isArray(positions) || positions.length === 0) return { closed: 0, pnl: 0 };
+    if (!Array.isArray(positions) || positions.length === 0) return { closed: 0, pnl: 0, actions: [] };
+
+    const now = Date.now();
 
     for (const pos of positions) {
       const size = Number(pos.size || 0);
-      const avgPrice = Number(pos.avg_price || 0);
-      const curPrice = Number(pos.cur_price || pos.price || 0);
+      const avgPrice = Number(pos.avgPrice || pos.avg_price || 0);
+      const curPrice = Number(pos.curPrice || pos.cur_price || pos.price || 0);
+      const tokenId = pos.asset || pos.token_id;
+      const title = pos.title || pos.market || "Unknown";
 
-      if (size <= 0 || avgPrice <= 0) continue;
+      if (size <= 0 || !tokenId) continue;
+
+      // Skip already-resolved positions (curPrice = 0 and redeemable)
+      if (curPrice === 0 && pos.redeemable) {
+        actions.push(`⏭ ${title}: expired, redeemable (no action needed)`);
+        continue;
+      }
 
       const unrealizedPnl = (curPrice - avgPrice) * size;
-      const pnlPct = (curPrice - avgPrice) / avgPrice;
+      const pnlPct = avgPrice > 0 ? (curPrice - avgPrice) / avgPrice : 0;
 
-      // Close if profit > 10% or if market is about to expire and we're in profit
-      if (pnlPct > 0.10) {
-        console.log(`💰 Closing winning position: ${pos.title || pos.market} | PnL: $${unrealizedPnl.toFixed(2)} (${(pnlPct * 100).toFixed(1)}%)`);
+      // Check time to expiry
+      const endDate = pos.endDate || pos.end_date;
+      const msToExpiry = endDate ? new Date(endDate + "T23:59:59Z").getTime() - now : Infinity;
+      const minsToExpiry = msToExpiry / 60000;
 
-        try {
-          const tokenId = pos.token_id || pos.asset;
-          if (!tokenId) continue;
+      let shouldClose = false;
+      let reason = "";
 
-          // Sell the position
-          const sellRes = await fetch(`${supabaseUrl}/functions/v1/polymarket-trade`, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              Authorization: `Bearer ${supabaseKey}`,
-              apikey: supabaseKey,
-            },
-            body: JSON.stringify({
-              action: "place-trade",
-              tokenId,
-              side: "SELL",
-              size: Math.floor(size),
-              price: curPrice * 0.98, // Sell slightly below market for quick fill
-            }),
-          });
+      // RULE 1: TAKE PROFIT — close if profit > 8%
+      if (pnlPct > 0.08) {
+        shouldClose = true;
+        reason = `TAKE PROFIT: +${(pnlPct * 100).toFixed(1)}% ($${unrealizedPnl.toFixed(2)})`;
+      }
+      // RULE 2: STOP LOSS — close if loss > 25%
+      else if (pnlPct < -0.25 && curPrice > 0) {
+        shouldClose = true;
+        reason = `STOP LOSS: ${(pnlPct * 100).toFixed(1)}% ($${unrealizedPnl.toFixed(2)})`;
+      }
+      // RULE 3: PRE-EXPIRY EXIT — if <2 min to expiry and any profit, take it
+      else if (minsToExpiry < 2 && pnlPct > 0) {
+        shouldClose = true;
+        reason = `PRE-EXPIRY: ${minsToExpiry.toFixed(0)}min left, locking +${(pnlPct * 100).toFixed(1)}%`;
+      }
+      // RULE 4: PRE-EXPIRY CUT — if <1 min to expiry and losing, cut to avoid full loss
+      else if (minsToExpiry < 1 && curPrice > 0.05) {
+        shouldClose = true;
+        reason = `PRE-EXPIRY CUT: ${minsToExpiry.toFixed(0)}min left, salvaging $${(curPrice * size).toFixed(2)}`;
+      }
 
-          const sellResult = await sellRes.json();
-          if (sellResult?.submitted) {
-            closed++;
-            totalPnl += unrealizedPnl;
-            console.log(`✅ Closed position: ${pos.title || pos.market} for $${unrealizedPnl.toFixed(2)} profit`);
-          }
-        } catch (e) {
-          console.error(`Failed to close position: ${e}`);
+      if (!shouldClose) {
+        actions.push(`📊 HOLD: ${title} | entry=$${avgPrice.toFixed(3)} cur=$${curPrice.toFixed(3)} pnl=${(pnlPct * 100).toFixed(1)}%`);
+        continue;
+      }
+
+      console.log(`🔄 ${reason} → Selling ${title}`);
+      actions.push(`${reason} → SELLING ${title}`);
+
+      try {
+        // Sell at slightly below market for quick FAK fill
+        const sellPrice = Math.max(0.01, curPrice * 0.95);
+        const sellSize = Math.max(1, Math.floor(size));
+
+        const sellRes = await fetch(`${supabaseUrl}/functions/v1/polymarket-trade`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${supabaseKey}`,
+            apikey: supabaseKey,
+          },
+          body: JSON.stringify({
+            action: "place-trade",
+            tokenId,
+            side: "SELL",
+            size: sellSize,
+            price: sellPrice,
+          }),
+        });
+
+        const sellResult = await sellRes.json();
+        if (sellResult?.submitted) {
+          closed++;
+          totalPnl += unrealizedPnl;
+          console.log(`✅ Closed: ${title} | ${reason}`);
+          actions.push(`✅ CLOSED: ${title} for $${unrealizedPnl.toFixed(2)}`);
+        } else {
+          console.log(`⚠ Failed to close ${title}: ${sellResult?.error || "unknown"}`);
+          actions.push(`⚠ FAILED to close ${title}: ${sellResult?.error || "unknown"}`);
         }
+      } catch (e) {
+        console.error(`Failed to close ${title}:`, e);
       }
     }
   } catch (e) {
-    console.error("Error checking positions:", e);
+    console.error("Error managing positions:", e);
   }
 
-  return { closed, pnl: totalPnl };
+  return { closed, pnl: totalPnl, actions };
 }
 
 serve(async (req) => {
@@ -337,11 +383,12 @@ serve(async (req) => {
     const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
     const supabaseKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
-    // Step 0: Close any winning positions before new trades
+    // Step 0: Manage positions — take profit, stop loss, pre-expiry exits
     if (liveTrading) {
-      const closeResult = await closeWinningPositions(supabaseUrl, supabaseKey);
-      if (closeResult.closed > 0) {
-        console.log(`💰 Closed ${closeResult.closed} winning positions for $${closeResult.pnl.toFixed(2)} total profit`);
+      const mgmt = await managePositions(supabaseUrl, supabaseKey);
+      if (mgmt.actions.length > 0) {
+        console.log(`📋 Position management: ${mgmt.closed} closed, P&L: $${mgmt.pnl.toFixed(2)}`);
+        for (const a of mgmt.actions) console.log(`  ${a}`);
       }
     }
 
