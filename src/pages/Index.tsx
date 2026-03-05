@@ -5,7 +5,7 @@ import { StatCard } from "@/components/StatCard";
 import { PnLChart } from "@/components/PnLChart";
 import { HyposChart } from "@/components/HyposChart";
 import { useBotStore } from "@/store/botStore";
-import { supabase } from "@/integrations/supabase/client";
+import { isSupabaseConfigured, supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
@@ -22,6 +22,12 @@ const Dashboard = () => {
 
   // Check API connection on mount
   useEffect(() => {
+    if (!isSupabaseConfigured) {
+      setApiConnected(false);
+      addLog("ERROR: Supabase config missing. Set VITE_SUPABASE_URL (or VITE_SUPABASE_PROJECT_ID) and VITE_SUPABASE_PUBLISHABLE_KEY.");
+      toast.error("Supabase config missing. Open Lovable project settings and set env vars.");
+      return;
+    }
     checkApiConnection();
     fetchBets();
     checkResolutions();
@@ -114,59 +120,13 @@ const Dashboard = () => {
     } catch {}
   }, [addLog, fetchBets]);
 
-  // Execute live trades via execute-trade edge function → Railway relay → Polymarket CLOB
-  const executeTrade = useCallback(async (hypo: any) => {
-    try {
-      addLog(`🔄 ${hypo.action} ${hypo.market}…`);
-
-      const tokenIds: string[] = hypo.clobTokenIds || [];
-      if (tokenIds.length === 0) {
-        addLog(`⚠ No token IDs for ${hypo.market}, skipping`);
-        return { status: 'skipped', price: hypo.price || 0.5 };
-      }
-
-      const tokenId = hypo.action === "BUY" ? tokenIds[0] : (tokenIds[1] || tokenIds[0]);
-      const price = hypo.price || 0.5;
-
-      addLog(`📊 ${hypo.market}: px=$${price.toFixed(4)}, sz=${hypo.size}`);
-
-      // Call polymarket-trade function to place the order
-      const { data: result, error: tradeErr } = await supabase.functions.invoke("polymarket-trade", {
-        body: {
-          action: "place-trade",
-          tokenId,
-          side: hypo.action === "BUY" ? "BUY" : "SELL",
-          size: hypo.size,
-          price,
-          market: hypo.market,
-        },
-      });
-
-      if (tradeErr) {
-        addLog(`⚠ Trade error: ${tradeErr.message}`);
-        return { status: 'failed', price, error: tradeErr.message };
-      }
-
-      if (result?.success || result?.submitted) {
-        addLog(`✅ LIVE TRADE: ${hypo.action} ${hypo.size} @ $${result.finalPrice?.toFixed(4)} (ID: ${result.orderId || 'n/a'})`);
-        return { status: 'filled', price: result.finalPrice || price, result };
-      }
-
-      if (result?.error) {
-        addLog(`⚠ ${result.error}`);
-        return { status: 'failed', price, error: result.error };
-      }
-
-      return { status: 'pending', price };
-    } catch (e: any) {
-      addLog(`⚠ Trade error: ${e.message}`);
-      return { status: 'failed', price: hypo.price || 0.5, error: e.message };
-    }
-  }, [addLog]);
-
-
-
   const runCycle = useCallback(async () => {
+    if (!isSupabaseConfigured) {
+      addLog("ERROR: Supabase is not configured.");
+      toast.error("Supabase is not configured.");
+      return false;
+    }
+
     const state = useBotStore.getState();
 
     // In live mode, fetch real wallet balance to use as bankroll
@@ -206,24 +166,19 @@ const Dashboard = () => {
         return false;
       }
 
-      // If live trading is on, execute the trades
-      const trades: any[] = [];
-      if (state.liveTrading && data.hypos && data.hypos.length > 0) {
-        addLog(`⚡ Live mode: executing ${data.hypos.length} trades...`);
-        for (const hypo of data.hypos.slice(0, 10)) { // Max 10 trades per cycle for aggressive Kelly
-          const result = await executeTrade(hypo);
-          trades.push({
-            market: hypo.market,
-            tokenId: "",
-            side: hypo.action,
-            size: hypo.size,
-            price: result.price || 0,
-            status: result.status,
-            error: (result as any).error,
-            timestamp: Date.now(),
-          });
-        }
-      }
+      const trades: any[] =
+        state.liveTrading && Array.isArray(data.tradeResults)
+          ? data.tradeResults.map((t: any) => ({
+              market: t.market || "Unknown",
+              tokenId: t.tokenId || "",
+              side: t.side || "",
+              size: Number(t.size || 0),
+              price: Number(t.price || 0),
+              status: t.status || "pending",
+              error: t.error,
+              timestamp: Date.now(),
+            }))
+          : [];
 
       // In live mode, override bankroll with real wallet balance after trades
       if (state.liveTrading) {
@@ -255,7 +210,7 @@ const Dashboard = () => {
       toast.error("Cycle failed: " + e.message);
       return false;
     }
-  }, [addCycleResult, addLog, systemPrompt, executeTrade, checkApiConnection, checkResolutions]);
+  }, [addCycleResult, addLog, systemPrompt, checkApiConnection, checkResolutions]);
 
   const startBot = useCallback(async () => {
     const state = useBotStore.getState();
