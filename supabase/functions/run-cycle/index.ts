@@ -392,12 +392,37 @@ serve(async (req) => {
       }
     }
 
+    // Step 0.5: Fetch real wallet balance for live trading
+    let walletUsdc = bankroll;
+    if (liveTrading) {
+      try {
+        const balRes = await fetch(`${supabaseUrl}/functions/v1/polymarket-trade`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${supabaseKey}`,
+            apikey: supabaseKey,
+          },
+          body: JSON.stringify({ action: "get-wallet-balance" }),
+        });
+        const balData = await balRes.json();
+        if (typeof balData.usdc === "number") {
+          walletUsdc = balData.usdc;
+          console.log(`💰 Wallet: $${walletUsdc.toFixed(2)} USDC available`);
+        }
+      } catch (e) {
+        console.log("⚠ Could not fetch wallet balance, using provided bankroll");
+      }
+    }
+
+    const effectiveBankroll = liveTrading ? walletUsdc : bankroll;
+
     const [polyResult, cryptoData] = await Promise.all([fetchPolymarket(), fetchCryptoPrices()]);
 
     const polyData = polyResult.text;
     const marketsMap = polyResult.marketsMap;
 
-    const userMessage = `Cycle ${cycle}. Bankroll: $${bankroll}.
+    const userMessage = `Cycle ${cycle}. Bankroll: $${effectiveBankroll.toFixed(2)}.${liveTrading ? ` WALLET BALANCE: $${walletUsdc.toFixed(2)} USDC. Do NOT place trades exceeding this balance.` : ""}
 Trade markets ending ≤60 min. Use 5-MINUTE candle data for direction, NOT just 24h trend.
 
 LIVE DATA:
