@@ -591,8 +591,8 @@ DO NOT SKIP CYCLES. DO NOT return empty hypos if momentum exists. Find trades an
         return false;
       }
       const edge = h.edge || 0;
-      if (edge < 0.05) {
-        console.log(`🚫 Rejected ${h.market}: edge ${edge} below 8% threshold`);
+      if (edge < 0.01) {
+        console.log(`🚫 Rejected ${h.market}: edge ${edge} below 1% threshold`);
         return false;
       }
       // Momentum-direction validation
