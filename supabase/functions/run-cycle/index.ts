@@ -236,7 +236,7 @@ async function executeTrade(
         action: "place-trade",
         tokenId,
         side: tradeSide,
-        size: hypo.size,
+        size: adjustedSize,
         price,
       }),
     });
