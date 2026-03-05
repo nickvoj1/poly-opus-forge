@@ -988,6 +988,14 @@ serve(async (req) => {
         return json({ results });
       }
 
+      case "redeem-position": {
+        if (!POLY_WALLET_KEY) return json({ error: "Wallet private key not configured" }, 400);
+        const { conditionId } = params;
+        if (!conditionId) return json({ error: "Missing conditionId" }, 400);
+        const result = await redeemPositions(POLY_WALLET_KEY, POLY_PROXY_ADDRESS || undefined, conditionId);
+        return json(result, result.success ? 200 : 400);
+      }
+
       default:
         return json({ error: `Unknown action: ${action}` }, 400);
     }
