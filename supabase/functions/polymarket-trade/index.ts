@@ -344,15 +344,54 @@ async function signAndSubmitOrder(
 
     console.log(`Signing order: ${side} $${size} @ $${finalPrice} (tick=${tickSize}, fee=${feeRateBps}, negRisk=${negRisk})`);
 
-    // Create signed order with correct market params
+    // Strategy A: Try using SDK's createAndPostOrder directly (handles serialization correctly)
+    try {
+      console.log("Attempting SDK createAndPostOrder (direct)...");
+      const sdkResult = await client.createAndPostOrder(
+        { tokenID: tokenId, price: finalPrice, size, side: tradeSide, feeRateBps },
+        { tickSize: `${tickSize}`, negRisk },
+        OrderType.FAK,
+      );
+      console.log("SDK postOrder result:", JSON.stringify(sdkResult).substring(0, 300));
+      if (sdkResult?.orderID || sdkResult?.success) {
+        return { submitted: true, result: sdkResult, finalPrice, tickSize: `${tickSize}`, via: "sdk-direct" };
+      }
+      // If we get here, SDK call succeeded but no orderID — fall through to manual
+      console.log("SDK returned no orderID, trying manual submission...");
+    } catch (sdkErr: any) {
+      console.log(`SDK direct failed: ${sdkErr.message?.substring(0, 200)} — falling back to manual proxy submission`);
+    }
+
+    // Strategy B: Sign with SDK, submit manually via proxy
     const signedOrder = await client.createOrder(
       { tokenID: tokenId, price: finalPrice, size, side: tradeSide, orderType: OrderType.FAK, feeRateBps },
       { tickSize: `${tickSize}`, negRisk },
     );
 
-    console.log("Signed order side:", signedOrder.side, typeof signedOrder.side, "| feeRateBps:", signedOrder.feeRateBps, "| signatureType:", signedOrder.signatureType);
+    console.log("Signed order fields:", JSON.stringify({
+      salt: signedOrder.salt, saltType: typeof signedOrder.salt,
+      makerAmount: signedOrder.makerAmount, makerAmountType: typeof signedOrder.makerAmount,
+      takerAmount: signedOrder.takerAmount, takerAmountType: typeof signedOrder.takerAmount,
+      side: signedOrder.side, sideType: typeof signedOrder.side,
+      feeRateBps: signedOrder.feeRateBps, feeType: typeof signedOrder.feeRateBps,
+      signatureType: signedOrder.signatureType, sigTypeType: typeof signedOrder.signatureType,
+      nonce: signedOrder.nonce, nonceType: typeof signedOrder.nonce,
+      expiration: signedOrder.expiration, expType: typeof signedOrder.expiration,
+    }));
 
-    // Convert to CLOB API format (matches SDK's orderToJson exactly)
+    // Use SDK's postOrder method (handles serialization correctly)
+    try {
+      console.log("Trying SDK postOrder with signed order...");
+      const postResult = await client.postOrder(signedOrder, OrderType.FAK);
+      console.log("SDK postOrder result:", JSON.stringify(postResult).substring(0, 300));
+      if (postResult?.orderID || postResult?.success) {
+        return { submitted: true, result: postResult, finalPrice, tickSize: `${tickSize}`, via: "sdk-postOrder" };
+      }
+    } catch (postErr: any) {
+      console.log(`SDK postOrder failed: ${postErr.message?.substring(0, 200)}`);
+    }
+
+    // Strategy C: Manual proxy submission as last resort
     const sideStr = signedOrder.side === 0 || signedOrder.side === "BUY" ? "BUY" : "SELL";
     const orderPayload = {
       deferExec: false,
@@ -377,7 +416,6 @@ async function signAndSubmitOrder(
 
     console.log("Order payload owner:", orderPayload.owner, "maker:", orderPayload.order.maker, "signer:", orderPayload.order.signer);
 
-    // Build L2 HMAC headers for submission
     const ts = Math.floor(Date.now() / 1000);
     const orderBody = JSON.stringify(orderPayload);
     const l2Sig = await buildPolyHmacSignature(storedCreds.secret, ts, "POST", "/order", orderBody);
@@ -392,7 +430,6 @@ async function signAndSubmitOrder(
 
     console.log("Submitting order via proxy:", orderBody.substring(0, 300));
 
-    // Submit via proxy (bypasses geoblocking)
     const result = await proxiedFetch(`${CLOB_HOST}/order`, {
       method: "POST",
       headers: polyHeaders,
