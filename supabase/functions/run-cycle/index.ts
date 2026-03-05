@@ -564,9 +564,18 @@ CRITICAL RULES:
     parsed.rules = parsed.rules || [];
     parsed.log = parsed.log || "Cycle complete";
 
-    // Server-side validation: filter out bad trades
+    // Server-side validation: filter out bad trades and duplicates
     const preFilterCount = parsed.hypos.length;
     parsed.hypos = parsed.hypos.filter((h: any) => {
+      if (!h.market || typeof h.market !== "string") {
+        console.log(`🚫 Rejected trade: missing market name`);
+        return false;
+      }
+      // Dedup: skip if we already have a pending bet on this market
+      if (existingMarkets.has(h.market)) {
+        console.log(`🚫 Rejected ${h.market}: already have a pending position`);
+        return false;
+      }
       const price = h.price || 0;
       if (price < 0.10 || price > 0.85) {
         console.log(`🚫 Rejected ${h.market}: price ${price} outside bounds`);
@@ -577,8 +586,15 @@ CRITICAL RULES:
         console.log(`🚫 Rejected ${h.market}: edge ${edge} below 8% threshold`);
         return false;
       }
-      if (!h.market || typeof h.market !== "string") {
-        console.log(`🚫 Rejected trade: missing market name`);
+      // Momentum-direction validation
+      const action = (h.action || "").toUpperCase();
+      const reasoning = (h.reasoning || "").toLowerCase();
+      if (action === "BUY" && (reasoning.includes("negative momentum") || reasoning.includes("contrarian"))) {
+        console.log(`🚫 Rejected ${h.market}: BUY contradicts negative momentum`);
+        return false;
+      }
+      if (action === "SELL" && (reasoning.includes("positive momentum") || reasoning.includes("contrarian"))) {
+        console.log(`🚫 Rejected ${h.market}: SELL contradicts positive momentum`);
         return false;
       }
       return true;
