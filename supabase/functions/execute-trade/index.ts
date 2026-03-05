@@ -1,6 +1,4 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
-import { buildPolyHmacSignature } from "https://esm.sh/@polymarket/clob-client@5.2.3/dist/signing/hmac";
-import { ClobClient, Side, OrderType } from "https://esm.sh/@polymarket/clob-client@5.2.3";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -14,6 +12,69 @@ function getRelayUrl() {
   let url = Deno.env.get("RELAY_SERVER_URL") || "https://poly-order-relay-production.up.railway.app";
   if (url && !url.startsWith("http")) url = `https://${url}`;
   return url;
+}
+
+function normalizeRelayTokenId(tokenId: string): string {
+  const raw = tokenId.trim();
+  if (raw.startsWith("0x")) return raw;
+  try {
+    const hex = BigInt(raw).toString(16).padStart(64, "0");
+    return `0x${hex}`;
+  } catch {
+    return raw;
+  }
+}
+
+function decimalFromHex(tokenId: string): string | null {
+  try {
+    if (!tokenId.startsWith("0x")) return null;
+    return BigInt(tokenId).toString(10);
+  } catch {
+    return null;
+  }
+}
+
+function tokenCandidates(tokenId: string): string[] {
+  const raw = tokenId.trim();
+  const hex = normalizeRelayTokenId(raw);
+  const dec = raw.startsWith("0x") ? decimalFromHex(raw) : raw;
+  const out = [raw, hex, dec || ""].filter(Boolean);
+  return Array.from(new Set(out));
+}
+
+function parseRelayResponse(text: string) {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return { raw: text };
+  }
+}
+
+async function callRelay(
+  url: string,
+  path: string,
+  headers: Record<string, string>,
+  body: any,
+): Promise<{ ok: boolean; status: number; json: any; text: string; path: string }> {
+  const res = await fetch(`${url}${path}`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(body),
+  });
+  const text = await res.text();
+  const json = parseRelayResponse(text);
+  return { ok: res.ok, status: res.status, json, text, path };
+}
+
+function isMissingRoute(r: { status: number; json: any; text: string }) {
+  const txt = (r.text || "").toLowerCase();
+  const msg = (r.json?.message || "").toString().toLowerCase();
+  return r.status === 404 || r.status === 405 || txt.includes("cannot post") || msg.includes("not found");
+}
+
+function isMarketNotFound(r: { json: any; text: string }) {
+  const err = (r.json?.error || r.json?.message || r.text || "").toString().toLowerCase();
+  return err.includes("market not found");
 }
 
 async function getMidpoint(tokenId: string): Promise<number | null> {
@@ -37,11 +98,7 @@ serve(async (req) => {
     });
 
   try {
-    const { tokenId, side, price, size } = await req.json();
-
-    if (!tokenId || !side || !size) {
-      return json({ error: "Missing required fields: tokenId, side, size" }, 400);
-    }
+    const payload = await req.json();
 
     const PRIVATE_KEY = Deno.env.get("POLYMARKET_WALLET_PRIVATE_KEY");
     const API_KEY = Deno.env.get("POLYMARKET_API_KEY");
@@ -65,127 +122,123 @@ serve(async (req) => {
     const wallet = new ethers.Wallet(pk);
     const eoaAddress = wallet.address;
     const funderAddress = PROXY_ADDRESS || eoaAddress;
-    const sigType = PROXY_ADDRESS ? 2 : 0; // 2=proxy, 0=EOA
 
     // Parse + validate/fix Lovable partial payloads
-    const payload = await req.json();
     const tokenId = payload.tokenId?.toString() || payload.conditionId?.toString();
     const side = (payload.side || payload.direction)?.toUpperCase();
-    const sizeStr = (payload.size || payload.amount || "0.1").toString();
-    const priceStr = (payload.price || payload.targetPrice || "0.5").toString();
+    const sizeStr = (payload.size || payload.amount).toString();
+    const priceStr = (payload.price || payload.targetPrice || "").toString();
 
-    if (!tokenId || (side !== "BUY" && side !== "SELL") || !sizeStr || !priceStr) {
+    if (!tokenId || (side !== "BUY" && side !== "SELL") || !sizeStr) {
       console.log("Bad payload:", JSON.stringify(payload));
-      return json({ error: "Missing: tokenId, side(BUY/SELL), size, price" }, 400);
+      return json({ error: "Missing: tokenId, side(BUY/SELL), size" }, 400);
     }
 
-    const size = parseFloat(sizeStr);
-    const price = parseFloat(priceStr);
-    const tradeSide = side === "BUY" ? Side.BUY : Side.SELL;
-    const finalPrice = Math.round(price * 100) / 100;
+    const parsedSize = parseFloat(sizeStr);
+    if (!Number.isFinite(parsedSize) || parsedSize <= 0) {
+      return json({ error: "Invalid size" }, 400);
+    }
+    const size = Math.max(5, parsedSize);
+
+    let parsedPrice = parseFloat(priceStr);
+    if (!Number.isFinite(parsedPrice) || parsedPrice <= 0 || parsedPrice >= 1) {
+      const midpoint = await getMidpoint(tokenId);
+      parsedPrice = midpoint ?? 0.5;
+    }
+
+    const tickedPrice = Math.max(0.01, Math.min(0.99, Math.round(parsedPrice * 100) / 100));
 
     console.log(
-      `Fixed: ${side} ${size}@${finalPrice} token=${tokenId.slice(0, 10)} wallet=${funderAddress.slice(0, 10)}`,
+      `Fixed: ${side} ${size}@${tickedPrice} token=${tokenId.slice(0, 10)} wallet=${funderAddress.slice(0, 10)}`,
     );
-
-    // Create ClobClient — points at actual CLOB to build+sign the order
-    // The order is then submitted via the relay to avoid geoblocking
-    const client = new ClobClient(CLOB_HOST, 137, wallet as any, creds, sigType, funderAddress);
-
-    // Create the signed order
-    const orderArgs = {
-      tokenID: tokenId,
-      price: tickedPrice,
-      size,
-      side: tradeSide,
-      orderType: OrderType.FAK,
-    };
-
-    console.log("Creating signed order...");
-    const signedOrder = await client.createOrder(orderArgs);
-    console.log("Signed order created:", JSON.stringify(signedOrder).substring(0, 200));
-
-    // Build L2 auth headers for submitting the order
-    const ts = Math.floor(Date.now() / 1000);
-    const orderBody = JSON.stringify({ order: signedOrder, orderType: "FAK" });
-    const l2Sig = await buildPolyHmacSignature(API_SECRET, ts, "POST", "/order", orderBody);
-    const polyHeaders = {
-      POLY_ADDRESS: eoaAddress,
-      POLY_SIGNATURE: l2Sig,
-      POLY_TIMESTAMP: `${ts}`,
-      POLY_API_KEY: API_KEY,
-      POLY_PASSPHRASE: API_PASSPHRASE,
-      "Content-Type": "application/json",
-    };
 
     const RELAY_URL = getRelayUrl();
     const relayHeaders: Record<string, string> = { "Content-Type": "application/json" };
     if (RELAY_SECRET) relayHeaders["x-relay-secret"] = RELAY_SECRET;
+    const relayTokenIds = tokenCandidates(tokenId);
 
-    // Try /trade on relay first (full order flow, relay signs internally)
-    console.log(`Trying ${RELAY_URL}/trade`);
-    const tradeRes = await fetch(`${RELAY_URL}/trade`, {
-      method: "POST",
-      headers: relayHeaders,
-      body: JSON.stringify({ tokenId, side: side.toUpperCase(), size: size, price: tickedPrice, orderType: "FAK" }),
-    });
+    // Try modern relay first (/trade), then legacy (/order), across token format variants.
+    const paths = ["/trade", "/order"];
 
-    if (tradeRes.ok) {
-      const tradeResult = await tradeRes.json();
-      if (tradeResult?.success || tradeResult?.submitted) {
-        console.log(`✅ Submitted via relay /trade`);
-        return json({
-          success: true,
-          submitted: true,
-          orderId: tradeResult.orderID,
-          finalPrice: tickedPrice,
-          result: tradeResult,
-          via: "relay-trade",
-        });
+    let relay: { ok: boolean; status: number; json: any; text: string; path: string } | null = null;
+    for (const path of paths) {
+      for (const tid of relayTokenIds) {
+        const body =
+          path === "/trade"
+            ? {
+                tokenId: tid,
+                tokenID: tid,
+                side: side.toUpperCase(),
+                amount: size,
+                size,
+                price: tickedPrice,
+                orderType: "FAK",
+              }
+            : {
+                tokenId: tid,
+                tokenID: tid,
+                side: side.toUpperCase(),
+                size,
+                price: tickedPrice,
+              };
+        console.log(`Trying ${RELAY_URL}${path} token=${tid.slice(0, 12)}...`);
+        const r = await callRelay(RELAY_URL, path, relayHeaders, body);
+        relay = r;
+
+        // If route is missing, move to next path.
+        if (isMissingRoute(r)) break;
+        // If market lookup failed, try next token format on same path.
+        if (isMarketNotFound(r)) continue;
+        // Otherwise keep this response.
+        break;
       }
-    } else {
-      const errText = await tradeRes.text();
-      console.log(`Relay /trade [${tradeRes.status}]: ${errText.substring(0, 200)}`);
+      if (relay && !isMissingRoute(relay) && !isMarketNotFound(relay)) break;
+    }
+    if (!relay) return json({ error: "Relay call failed to initialize" }, 500);
+
+    const tradeRes = { ok: relay.ok, status: relay.status };
+    const tradeResult: any = relay.json;
+
+    const submitted = !!(
+      tradeResult?.submitted ||
+      tradeResult?.success ||
+      tradeResult?.status === "submitted" ||
+      tradeResult?.orderId === "pending" ||
+      tradeResult?.orderID === "pending" ||
+      tradeResult?.data?.status === "submitted"
+    );
+    if (tradeRes.ok && submitted) {
+      return json({
+        success: true,
+        submitted: true,
+        orderId: tradeResult?.orderID || tradeResult?.orderId || tradeResult?.data?.orderID || "pending",
+        finalPrice: tickedPrice,
+        result: tradeResult,
+        via: `relay${relay.path}`,
+      });
     }
 
-    // Fallback: POST pre-signed order via relay's /order proxy
-    console.log(`Trying ${RELAY_URL}/order (pre-signed)`);
-    const orderRes = await fetch(`${RELAY_URL}/order`, {
-      method: "POST",
-      headers: relayHeaders,
-      body: JSON.stringify({ order: signedOrder, headers: polyHeaders }),
-    });
-
-    const orderText = await orderRes.text();
-    console.log(`Relay /order [${orderRes.status}]: ${orderText.substring(0, 300)}`);
-
-    let orderResult: any;
-    try {
-      orderResult = JSON.parse(orderText);
-    } catch {
-      orderResult = { raw: orderText };
-    }
-
-    if (!orderRes.ok || (!orderResult?.success && orderResult?.error)) {
+    if (!tradeRes.ok || tradeResult?.error) {
       return json(
         {
           success: false,
           submitted: false,
-          error: orderResult?.error || orderResult?.message || `Relay error ${orderRes.status}`,
-          relayStatus: orderRes.status,
-          relayResponse: orderResult,
+          error: tradeResult?.error || tradeResult?.message || `Relay error ${tradeRes.status}`,
+          relayStatus: tradeRes.status,
+          relayResponse: tradeResult,
+          relayPath: relay.path,
         },
         400,
       );
     }
 
     return json({
-      success: true,
-      submitted: true,
-      orderId: orderResult?.orderID || orderResult?.orderId || orderResult?.data?.orderID,
+      success: false,
+      submitted: false,
+      orderId: tradeResult?.orderID || tradeResult?.orderId || tradeResult?.data?.orderID || null,
       finalPrice: tickedPrice,
-      result: orderResult,
-      via: "relay-order",
+      result: tradeResult,
+      via: `relay${relay.path}`,
     });
   } catch (e) {
     console.error("execute-trade error:", e);
