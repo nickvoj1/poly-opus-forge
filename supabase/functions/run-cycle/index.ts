@@ -11,45 +11,21 @@ async function fetchPolymarket(): Promise<{ text: string; marketsMap: Record<str
   try {
     const now = new Date();
     const endMin = now.toISOString();
-    const soon10 = new Date(now.getTime() + 10 * 60 * 1000).toISOString();
-    const soon60 = new Date(now.getTime() + 60 * 60 * 1000).toISOString();
-    const soon4h = new Date(now.getTime() + 4 * 60 * 60 * 1000).toISOString();
-    const soon24h = new Date(now.getTime() + 24 * 60 * 60 * 1000).toISOString();
+    const soon5 = new Date(now.getTime() + 5 * 60 * 1000).toISOString();
 
-    // Fetch ALL crypto markets across multiple time horizons + categories
+    // Fetch ONLY markets ending in ≤5 minutes + crypto-specific searches (filtered later)
     const queries = [
-      // Urgent: ending <10 min
+      // Primary: ending ≤5 min
       fetch(
-        `https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=50&order=endDate&ascending=true&end_date_min=${endMin}&end_date_max=${soon10}`,
+        `https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=100&order=endDate&ascending=true&end_date_min=${endMin}&end_date_max=${soon5}`,
       ),
-      // Near: ending <1 hour
-      fetch(
-        `https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=50&order=endDate&ascending=true&end_date_min=${soon10}&end_date_max=${soon60}`,
-      ),
-      // Medium: ending 1-4 hours
-      fetch(
-        `https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=50&order=endDate&ascending=true&end_date_min=${soon60}&end_date_max=${soon4h}`,
-      ),
-      // Longer: ending 4-24 hours
-      fetch(
-        `https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=30&order=endDate&ascending=true&end_date_min=${soon4h}&end_date_max=${soon24h}`,
-      ),
-      // Top volume across all crypto
-      fetch(`https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=50&order=volume&ascending=false`),
-      // Top liquidity
-      fetch(
-        `https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=30&order=liquidityNum&ascending=false`,
-      ),
-      // Crypto-specific searches
-      fetch(
-        `https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=30&order=volume&ascending=false&tag=crypto`,
-      ),
+      // Crypto-specific searches (will be filtered to ≤5 min)
+      fetch(`https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=30&order=volume&ascending=false&tag=crypto`),
       fetch(`https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=20&query=Bitcoin`),
       fetch(`https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=20&query=Ethereum`),
       fetch(`https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=20&query=Solana`),
       fetch(`https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=15&query=XRP`),
       fetch(`https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=15&query=Dogecoin`),
-      fetch(`https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=15&query=crypto`),
     ];
 
     const responses = await Promise.all(queries);
@@ -80,53 +56,26 @@ async function fetchPolymarket(): Promise<{ text: string; marketsMap: Record<str
       return `${m.question} | conditionId: ${m.conditionId || "?"} | price: ${m.outcomePrices} | vol: $${Math.round(m.volumeNum || 0)} | liq: $${Math.round(m.liquidityNum || 0)} | ENDS IN: ${minsLeft} min`;
     };
 
-    // Categorize markets
-    const urgent = allMarkets.filter((m) => {
+    // Filter to ONLY markets ending in ≤5 minutes
+    const fiveMinMs = 5 * 60 * 1000;
+    const eligible = allMarkets.filter((m) => {
       const end = m.endDate || m.end_date_iso;
-      return end && new Date(end).getTime() - now.getTime() < 10 * 60 * 1000;
-    });
-    const nearTerm = allMarkets.filter((m) => {
-      const end = m.endDate || m.end_date_iso;
-      const diff = end ? new Date(end).getTime() - now.getTime() : Infinity;
-      return diff >= 10 * 60 * 1000 && diff < 60 * 60 * 1000;
-    });
-    const medium = allMarkets.filter((m) => {
-      const end = m.endDate || m.end_date_iso;
-      const diff = end ? new Date(end).getTime() - now.getTime() : Infinity;
-      return diff >= 60 * 60 * 1000 && diff < 4 * 60 * 60 * 1000;
-    });
-    const longer = allMarkets.filter((m) => {
-      const end = m.endDate || m.end_date_iso;
-      const diff = end ? new Date(end).getTime() - now.getTime() : Infinity;
-      return diff >= 4 * 60 * 60 * 1000;
+      if (!end) return false;
+      const diff = new Date(end).getTime() - now.getTime();
+      return diff > 0 && diff <= fiveMinMs;
     });
 
-    // Sort by volume within each category
+    // Sort by volume
     const byVol = (a: any, b: any) => (b.volumeNum || 0) - (a.volumeNum || 0);
 
-    const sections = [
-      urgent.length
-        ? `⚡ ENDING <10 MIN (${urgent.length}):\n${urgent.sort(byVol).slice(0, 20).map(formatMarket).join("\n")}`
-        : "",
-      nearTerm.length
-        ? `🕐 ENDING 10-60 MIN (${nearTerm.length}):\n${nearTerm.sort(byVol).slice(0, 20).map(formatMarket).join("\n")}`
-        : "",
-      medium.length
-        ? `⏳ ENDING 1-4 HOURS (${medium.length}):\n${medium.sort(byVol).slice(0, 15).map(formatMarket).join("\n")}`
-        : "",
-      longer.sort(byVol).length
-        ? `📅 ENDING 4-24+ HOURS (${longer.length}):\n${longer.sort(byVol).slice(0, 10).map(formatMarket).join("\n")}`
-        : "",
-    ]
-      .filter(Boolean)
-      .join("\n\n");
+    const section = eligible.length
+      ? `⚡ ENDING ≤5 MIN (${eligible.length}):\n${eligible.sort(byVol).slice(0, 30).map(formatMarket).join("\n")}`
+      : "No markets ending in ≤5 minutes found.";
 
-    console.log(
-      `📊 Scanned ${allMarkets.length} unique markets (${urgent.length} urgent, ${nearTerm.length} near, ${medium.length} medium, ${longer.length} longer)`,
-    );
+    console.log(`📊 Scanned ${allMarkets.length} unique markets → ${eligible.length} ending in ≤5 min`);
 
     return {
-      text: `POLYMARKET ALL CRYPTO MARKETS (${allMarkets.length} total):\n${sections || "No active markets found."}`,
+      text: `POLYMARKET CRYPTO MARKETS ENDING ≤5 MIN (${eligible.length} total):\n${section}`,
       marketsMap,
     };
   } catch (e) {
@@ -279,7 +228,7 @@ serve(async (req) => {
     const marketsMap = polyResult.marketsMap;
 
     const userMessage = `Cycle ${cycle}. Bankroll: $${bankroll}.
-⚡ LIVE TRADING MODE: Aggressive Kelly sizing. Max $2.70 per trade (15% bankroll).
+⚡ ONLY trade markets ending in ≤5 MINUTES. Aggressive Kelly sizing. Max $2.70 per trade.
 
 LIVE DATA:
 ${polyData}
@@ -322,7 +271,7 @@ KELLY CRITERION STRATEGY (Target: 250% daily return):
 
 3. MARKET SELECTION:
    - ONLY CRYPTO markets. Ignore ALL non-crypto (politics, sports, weather, etc.).
-   - ONLY markets ending SOON: <10 min ideal, <60 min acceptable. Do NOT trade markets ending in hours.
+   - ONLY markets ending in ≤5 MINUTES. Do NOT trade ANY market ending later than 5 min.
    - ONLY high-volume markets (volume > $10,000 or liquidity > $5,000).
    - STRICT PRICE BOUNDS: Only trade sides priced between 0.15 and 0.75. REJECT any trade outside this range.
    - Parse "outcomePrices" as "[YesPrice, NoPrice]". Choose the side within 0.15-0.75.
@@ -351,7 +300,7 @@ KELLY CRITERION STRATEGY (Target: 250% daily return):
    - "mdd": max drawdown % from peak bankroll. If cycle 1, set to 0.
    - "rules": list 2-4 key rules/observations driving this cycle's decisions.
 
-CRITICAL: ONLY trade CRYPTO markets ending SOON (<60 min). Use EXACT market question in "market" field. Variable sizing is MANDATORY.`,
+CRITICAL: ONLY trade CRYPTO markets ending in ≤5 MINUTES. Use EXACT market question in "market" field. Variable sizing is MANDATORY. If no markets end in ≤5 min, return empty hypos.`,
           },
           { role: "user", content: userMessage },
         ],
