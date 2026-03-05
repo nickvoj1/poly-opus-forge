@@ -490,31 +490,33 @@ async function redeemPositions(
 
     const funderAddress = proxyAddress || wallet.address;
 
+    // Get current gas price for Polygon
+    const feeData = await provider.getFeeData();
+    const maxPriorityFee = feeData.maxPriorityFeePerGas || ethers.utils.parseUnits("30", "gwei");
+    const maxFee = feeData.maxFeePerGas || ethers.utils.parseUnits("100", "gwei");
+    const gasOverrides = { gasLimit: 500000, maxPriorityFeePerGas: maxPriorityFee, maxFeePerGas: maxFee };
+    console.log(`⛽ Gas: maxPriority=${ethers.utils.formatUnits(maxPriorityFee, "gwei")}gwei, maxFee=${ethers.utils.formatUnits(maxFee, "gwei")}gwei`);
+
     if (proxyAddress && proxyAddress.toLowerCase() !== wallet.address.toLowerCase()) {
-      // Polymarket uses a custom proxy, not Gnosis Safe.
-      // Try calling CTF redeemPositions directly from the proxy using its execute interface
       console.log(`🔄 Redeeming via proxy ${proxyAddress} for condition ${conditionId.substring(0, 16)}...`);
 
-      // Polymarket proxy uses a simple execute(address,uint256,bytes) pattern
       const proxyInterface = new ethers.utils.Interface([
         "function execute(address to, uint256 value, bytes data) returns (bytes)",
       ]);
 
       try {
         const proxyContract = new ethers.Contract(proxyAddress, proxyInterface, wallet);
-        const tx = await proxyContract.execute(CTF_ADDRESS, 0, redeemData, { gasLimit: 500000 });
+        const tx = await proxyContract.execute(CTF_ADDRESS, 0, redeemData, gasOverrides);
         console.log(`📝 Redeem tx sent via proxy: ${tx.hash}`);
         const receipt = await tx.wait();
         console.log(`✅ Redeem confirmed: ${receipt.transactionHash} (gas: ${receipt.gasUsed.toString()})`);
         return { success: true, txHash: receipt.transactionHash };
       } catch (proxyErr: any) {
         console.log(`⚠ Proxy execute failed: ${proxyErr.message}, trying direct EOA...`);
-        // Fallback: try direct CTF call from EOA (works if tokens are on EOA)
         try {
           const ctfContract = new ethers.Contract(CTF_ADDRESS, ctfInterface, wallet);
           const tx = await ctfContract.redeemPositions(
-            USDC_E, PARENT_COLLECTION_ID, conditionId, INDEX_SETS,
-            { gasLimit: 300000 },
+            USDC_E, PARENT_COLLECTION_ID, conditionId, INDEX_SETS, gasOverrides,
           );
           console.log(`📝 Redeem tx sent (EOA fallback): ${tx.hash}`);
           const receipt = await tx.wait();
@@ -525,12 +527,6 @@ async function redeemPositions(
           return { success: false, error: `Proxy: ${proxyErr.message} | EOA: ${eoaErr.message}` };
         }
       }
-    }
-  } catch (e) {
-    console.error("Redeem error:", e);
-    return { success: false, error: e instanceof Error ? e.message : String(e) };
-  }
-}
 
 // ── Cancel Order via L2 Auth ──
 async function cancelOrder(
