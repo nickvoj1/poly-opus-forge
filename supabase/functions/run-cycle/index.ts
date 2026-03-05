@@ -526,7 +526,12 @@ STRATEGY: MULTI-TIMEFRAME MISPRICED ODDS + MOMENTUM
    - Edge 25%+: size = 12% of bankroll (max)
    - Live mode hard cap: $2.70 per trade.
 
-6. PRIORITY: Prefer shorter-duration markets (more edge, faster resolution). Only trade 1-4h markets if they show strong multi-timeframe alignment AND significant mispricing.
+6. PRIORITY ORDER (STRICT):
+   1st: ≤5 min markets — ALWAYS scan and trade these first. Fastest resolution, highest edge.
+   2nd: 5-30 min markets — trade if no ≤5 min opportunities exist.
+   3rd: 30-60 min markets — trade only if nothing shorter is available.
+   4th: 1-4h markets — LAST RESORT only. Must have strong multi-timeframe alignment AND significant mispricing.
+   You MUST attempt ≤5 min markets before considering anything longer. Only fall through if genuinely no edge exists in shorter timeframes.
 
 7. OUTPUT FORMAT (all fields required):
    {"cycle":N, "bankroll":N, "sharpe":N, "mdd":N, "hypos":[...], "rules":["rule1","rule2"], "log":"summary"}
