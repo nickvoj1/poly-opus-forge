@@ -335,11 +335,11 @@ async function signAndSubmitOrder(
 
     // Strategy A: Try using SDK's createAndPostOrder directly (handles serialization correctly)
     try {
-      console.log("Attempting SDK createAndPostOrder (direct)...");
+      console.log("Attempting SDK createAndPostOrder (direct) with GTC...");
       const sdkResult = await client.createAndPostOrder(
         { tokenID: tokenId, price: finalPrice, size: roundedSize, side: tradeSide, feeRateBps },
         { tickSize: `${tickSize}`, negRisk },
-        OrderType.FAK,
+        OrderType.GTC,
       );
       console.log("SDK postOrder result:", JSON.stringify(sdkResult).substring(0, 300));
       if (sdkResult?.orderID || sdkResult?.success) {
@@ -353,7 +353,7 @@ async function signAndSubmitOrder(
 
     // Strategy B: Sign with SDK, submit manually via proxy
     const signedOrder = await client.createOrder(
-      { tokenID: tokenId, price: finalPrice, size: roundedSize, side: tradeSide, orderType: OrderType.FAK, feeRateBps },
+      { tokenID: tokenId, price: finalPrice, size: roundedSize, side: tradeSide, orderType: OrderType.GTC, feeRateBps },
       { tickSize: `${tickSize}`, negRisk },
     );
 
@@ -370,8 +370,8 @@ async function signAndSubmitOrder(
 
     // Use SDK's postOrder method (handles serialization correctly)
     try {
-      console.log("Trying SDK postOrder with signed order...");
-      const postResult = await client.postOrder(signedOrder, OrderType.FAK);
+      console.log("Trying SDK postOrder with signed order (GTC)...");
+      const postResult = await client.postOrder(signedOrder, OrderType.GTC);
       console.log("SDK postOrder result:", JSON.stringify(postResult).substring(0, 300));
       if (postResult?.orderID || postResult?.success) {
         return { submitted: true, result: postResult, finalPrice, tickSize: `${tickSize}`, via: "sdk-postOrder" };
@@ -400,7 +400,7 @@ async function signAndSubmitOrder(
         signature: signedOrder.signature,
       },
       owner: storedCreds.apiKey,
-      orderType: "FAK",
+      orderType: "GTC",
     };
 
     console.log("Order payload owner:", orderPayload.owner, "maker:", orderPayload.order.maker, "signer:", orderPayload.order.signer);
@@ -697,7 +697,7 @@ serve(async (req) => {
             const relayRes = await fetch(`${RELAY_URL}/trade`, {
               method: "POST",
               headers: relayHeaders,
-              body: JSON.stringify({ tokenId, side, amount: size, price, orderType: "FAK" }),
+              body: JSON.stringify({ tokenId, side, amount: size, price, orderType: "GTC" }),
             });
             const relayResult = await relayRes.json();
             console.log(`Relay /trade response [${relayRes.status}]:`, JSON.stringify(relayResult).substring(0, 300));
