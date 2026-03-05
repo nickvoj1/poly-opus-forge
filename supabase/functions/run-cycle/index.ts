@@ -592,11 +592,16 @@ CRITICAL RULES:
     const tradeResults: any[] = [];
 
     if (liveTrading && parsed.hypos.length > 0) {
-      console.log(`⚡ Executing ${parsed.hypos.length} live trades...`);
+      console.log(`⚡ Executing ${parsed.hypos.length} live GTC trades...`);
+
+      const orderIds: string[] = [];
 
       for (const hypo of parsed.hypos.slice(0, 10)) {
         const tradeResult = await executeTrade(supabaseUrl, supabaseKey, hypo, marketsMap);
         tradeResults.push({ market: hypo.market, ...tradeResult });
+
+        // Track order IDs for auto-cancel
+        if (tradeResult.orderID) orderIds.push(tradeResult.orderID);
 
         const marketMeta = marketsMap[hypo.market] || {};
         const betData = {
@@ -615,6 +620,29 @@ CRITICAL RULES:
 
         const { error: insertErr } = await sb.from("bets").insert(betData);
         if (insertErr) console.error(`Failed to save bet for ${hypo.market}:`, insertErr);
+      }
+
+      // Wait 45 seconds for GTC orders to fill, then cancel any remaining open orders
+      if (orderIds.length > 0) {
+        console.log(`⏳ Waiting 45s for ${orderIds.length} GTC orders to fill...`);
+        await new Promise((r) => setTimeout(r, 45000));
+
+        // Cancel all open orders (cleaner than tracking individual fills)
+        try {
+          const cancelRes = await fetch(`${supabaseUrl}/functions/v1/polymarket-trade`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${supabaseKey}`,
+              apikey: supabaseKey,
+            },
+            body: JSON.stringify({ action: "cancel-all-orders" }),
+          });
+          const cancelResult = await cancelRes.json();
+          console.log(`🧹 Auto-cancel result:`, JSON.stringify(cancelResult).substring(0, 200));
+        } catch (e) {
+          console.error("Auto-cancel error:", e);
+        }
       }
 
       const filled = tradeResults.filter((t) => t.status === "filled").length;
