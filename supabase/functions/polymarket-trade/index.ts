@@ -674,8 +674,8 @@ serve(async (req) => {
         // Default negRisk=true for crypto up/down markets if not explicitly set
         let resolvedNegRisk = negRisk;
         if (resolvedNegRisk === undefined || resolvedNegRisk === null) {
-          resolvedNegRisk = isCryptoUpDownMarket(market) ? true : false;
-          if (resolvedNegRisk) console.log(`Auto-detected crypto up/down market, forcing negRisk=true: ${market}`);
+          resolvedNegRisk = false; // Default to false — Gamma API will resolve the actual value in signAndSubmitOrder
+          console.log(`negRisk not specified, defaulting to false (will be resolved by Gamma API)`);
         }
 
         // Strategy 1: Use relay server's /trade endpoint (it signs + submits from non-blocked region)
