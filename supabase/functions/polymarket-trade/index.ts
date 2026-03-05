@@ -1,7 +1,7 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
-import { buildPolyHmacSignature } from "https://esm.sh/@polymarket/clob-client@5.2.3/dist/signing/hmac";
-import { ClobClient } from "https://esm.sh/@polymarket/clob-client@5.2.3";
-import { Side as ClobSide, OrderType } from "https://esm.sh/@polymarket/clob-client@5.2.3";
+import { buildPolyHmacSignature } from "https://esm.sh/@polymarket/clob-client@5.7.0/dist/signing/hmac";
+import { ClobClient } from "https://esm.sh/@polymarket/clob-client@5.7.0";
+import { Side as ClobSide, OrderType } from "https://esm.sh/@polymarket/clob-client@5.7.0";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
