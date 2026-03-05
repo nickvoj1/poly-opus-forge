@@ -290,9 +290,45 @@ async function managePositions(
 
       if (size <= 0 || !tokenId) continue;
 
-      // Skip already-resolved positions (curPrice = 0 and redeemable)
+      // Auto-redeem resolved positions
       if (curPrice === 0 && pos.redeemable) {
-        actions.push(`⏭ ${title}: expired, redeemable (no action needed)`);
+        // Look up conditionId from Gamma API
+        let conditionId = pos.conditionId || pos.condition_id;
+        if (!conditionId && tokenId) {
+          try {
+            const gammaRes = await fetch(`https://gamma-api.polymarket.com/markets?clob_token_ids=${tokenId}`);
+            if (gammaRes.ok) {
+              const gammaMarkets = await gammaRes.json();
+              if (gammaMarkets[0]?.conditionId) conditionId = gammaMarkets[0].conditionId;
+            }
+          } catch {}
+        }
+
+        if (conditionId) {
+          console.log(`🔄 Auto-redeeming ${title} (condition: ${conditionId.substring(0, 16)}...)`);
+          try {
+            const redeemRes = await fetch(`${supabaseUrl}/functions/v1/polymarket-trade`, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                Authorization: `Bearer ${supabaseKey}`,
+                apikey: supabaseKey,
+              },
+              body: JSON.stringify({ action: "redeem-position", conditionId }),
+            });
+            const redeemResult = await redeemRes.json();
+            if (redeemResult?.success) {
+              actions.push(`✅ REDEEMED: ${title} (tx: ${redeemResult.txHash?.substring(0, 16)}...)`);
+              closed++;
+            } else {
+              actions.push(`⚠ Redeem failed: ${title}: ${redeemResult?.error || "unknown"}`);
+            }
+          } catch (e) {
+            actions.push(`⚠ Redeem error: ${title}: ${e}`);
+          }
+        } else {
+          actions.push(`⏭ ${title}: redeemable but no conditionId found`);
+        }
         continue;
       }
 
