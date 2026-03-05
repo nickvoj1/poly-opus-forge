@@ -43,21 +43,59 @@ async function getL2Headers(
 }
 
 // ── Fetch negRisk from Gamma API (not geoblocked) ──
-async function fetchNegRiskFromGamma(tokenId: string): Promise<boolean | null> {
+async function fetchNegRiskFromGamma(tokenId: string, marketName?: string): Promise<boolean | null> {
   try {
+    // Try clob_token_ids first
     const res = await fetch(`https://gamma-api.polymarket.com/markets?clob_token_ids=${tokenId}&closed=false`);
-    if (!res.ok) return null;
-    const markets = await res.json();
-    if (markets.length > 0) {
-      const neg = markets[0].neg_risk;
-      console.log(`Gamma negRisk for token ${tokenId.substring(0, 12)}...: ${neg} (question: ${markets[0].question?.substring(0, 60)})`);
-      return neg === true || neg === "true";
+    if (res.ok) {
+      const markets = await res.json();
+      if (markets.length > 0) {
+        const neg = markets[0].neg_risk;
+        const question = markets[0].question || "";
+        console.log(`Gamma negRisk for token ${tokenId.substring(0, 12)}...: ${neg} (question: ${question.substring(0, 60)})`);
+        if (neg !== undefined && neg !== null) {
+          return neg === true || neg === "true";
+        }
+        // Gamma returned the market but neg_risk is undefined — check the question text
+        if (isCryptoUpDownMarket(question)) {
+          console.log(`Gamma neg_risk undefined but question matches crypto pattern → forcing negRisk=true`);
+          return true;
+        }
+      }
     }
-    // Try condition_id lookup
-    const res2 = await fetch(`https://gamma-api.polymarket.com/markets?active=true&limit=5`);
+
+    // Try searching by token_id without closed filter
+    const res2 = await fetch(`https://gamma-api.polymarket.com/markets?clob_token_ids=${tokenId}`);
+    if (res2.ok) {
+      const markets2 = await res2.json();
+      if (markets2.length > 0) {
+        const neg = markets2[0].neg_risk;
+        const question = markets2[0].question || "";
+        console.log(`Gamma (no filter) negRisk: ${neg} (question: ${question.substring(0, 60)})`);
+        if (neg !== undefined && neg !== null) {
+          return neg === true || neg === "true";
+        }
+        if (isCryptoUpDownMarket(question)) {
+          console.log(`Gamma neg_risk undefined but question matches crypto pattern → forcing negRisk=true`);
+          return true;
+        }
+      }
+    }
+
+    // If market name was provided and matches crypto pattern, force true
+    if (marketName && isCryptoUpDownMarket(marketName)) {
+      console.log(`Gamma lookup returned no neg_risk, but market name matches crypto pattern → forcing negRisk=true`);
+      return true;
+    }
+
     return null;
   } catch (e) {
     console.error("Gamma negRisk lookup error:", e);
+    // Even on error, if market name matches crypto pattern, force true
+    if (marketName && isCryptoUpDownMarket(marketName)) {
+      console.log(`Gamma lookup failed but market matches crypto pattern → forcing negRisk=true`);
+      return true;
+    }
     return null;
   }
 }
