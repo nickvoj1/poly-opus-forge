@@ -578,7 +578,8 @@ CRITICAL RULES:
       parsed.log += ` | Filtered: ${preFilterCount - parsed.hypos.length} rejected`;
     }
 
-    // Server-side Kelly sizing enforcement (reduced from previous aggressive levels)
+    // Server-side Kelly sizing enforcement using real wallet balance
+    let totalAllocated = 0;
     for (const h of parsed.hypos) {
       const edge = h.edge || 0;
       let kellyFraction: number;
@@ -589,14 +590,25 @@ CRITICAL RULES:
       } else {
         kellyFraction = 0.03;
       }
-      const kellySize = Math.round(bankroll * kellyFraction * 100) / 100;
+      const kellySize = Math.round(effectiveBankroll * kellyFraction * 100) / 100;
       const cappedSize = liveTrading ? Math.min(kellySize, 2.70) : kellySize;
-      if (cappedSize !== h.size) {
-        console.log(`📐 Kelly override: ${h.market} edge=${edge} → f=${kellyFraction} → $${h.size} → $${cappedSize}`);
+      // Ensure we don't exceed remaining wallet balance
+      const remainingBalance = liveTrading ? Math.max(0, walletUsdc - totalAllocated) : Infinity;
+      const finalSize = liveTrading ? Math.min(cappedSize, remainingBalance - 0.50) : cappedSize; // keep $0.50 buffer
+      if (finalSize < 0.50) {
+        console.log(`🚫 Skipping ${h.market}: insufficient balance (remaining: $${remainingBalance.toFixed(2)})`);
+        h._skip = true;
+        continue;
+      }
+      if (finalSize !== h.size) {
+        console.log(`📐 Kelly override: ${h.market} edge=${edge} → f=${kellyFraction} → $${h.size} → $${finalSize} (wallet: $${walletUsdc.toFixed(2)})`);
       }
       h.kelly_f = kellyFraction;
-      h.size = cappedSize;
+      h.size = finalSize;
+      totalAllocated += finalSize;
     }
+    // Remove skipped trades
+    parsed.hypos = parsed.hypos.filter((h: any) => !h._skip);
 
     console.log(`🤖 AI returned ${parsed.hypos.length} valid trade ideas`);
 
