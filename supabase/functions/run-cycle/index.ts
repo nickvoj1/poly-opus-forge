@@ -364,18 +364,23 @@ async function managePositions(
       let shouldClose = false;
       let reason = "";
 
-      // RULE 1: TAKE PROFIT — close if profit > 8%
-      if (pnlPct > 0.08) {
+      // RULE 1: TAKE PROFIT — close if profit > 20% (let winners run longer)
+      if (pnlPct > 0.20) {
         shouldClose = true;
         reason = `TAKE PROFIT: +${(pnlPct * 100).toFixed(1)}% ($${unrealizedPnl.toFixed(2)})`;
       }
-      // RULE 2: STOP LOSS — close if loss > 25%
-      else if (pnlPct < -0.25 && curPrice > 0) {
+      // RULE 1b: TRAILING STOP — if was up >12% but dropped back to 5%, lock profits
+      else if (pnlPct > 0.05 && pnlPct < 0.12 && minsToExpiry < 10) {
+        shouldClose = true;
+        reason = `TRAILING STOP: +${(pnlPct * 100).toFixed(1)}% with ${minsToExpiry.toFixed(0)}min left`;
+      }
+      // RULE 2: STOP LOSS — close if loss > 30% (wider stop for bigger swings)
+      else if (pnlPct < -0.30 && curPrice > 0) {
         shouldClose = true;
         reason = `STOP LOSS: ${(pnlPct * 100).toFixed(1)}% ($${unrealizedPnl.toFixed(2)})`;
       }
-      // RULE 3: PRE-EXPIRY EXIT — if <2 min to expiry and any profit, take it
-      else if (minsToExpiry < 2 && pnlPct > 0) {
+      // RULE 3: PRE-EXPIRY EXIT — if <3 min to expiry and any profit, take it
+      else if (minsToExpiry < 3 && pnlPct > 0) {
         shouldClose = true;
         reason = `PRE-EXPIRY: ${minsToExpiry.toFixed(0)}min left, locking +${(pnlPct * 100).toFixed(1)}%`;
       }
@@ -525,9 +530,10 @@ ${systemPrompt}`;
         messages: [
           {
             role: "system",
-            content: `You are an AGGRESSIVE quantitative trading engine for Polymarket. You MUST respond with valid JSON only. No markdown, no code blocks.
+            content: `You are a PROFIT-MAXIMIZING quantitative trading engine for Polymarket. You MUST respond with valid JSON only. No markdown, no code blocks.
 
-You MUST find at least 1-3 trades per cycle. Being idle loses money to opportunity cost. Trade aggressively.
+You MUST find 2-5 HIGH-CONVICTION trades per cycle. Every idle cycle is lost profit. Prioritize QUALITY over quantity — fewer big winners beat many small ones.
+COMPOUND WINNERS: After profitable cycles, increase position sizes. Winning streaks should accelerate returns.
 
 STRATEGY: MOMENTUM-BASED TRADING
 
@@ -548,11 +554,12 @@ STRATEGY: MOMENTUM-BASED TRADING
    - SELL allowed when price > 0.48 (market underpricing the DOWN outcome)
    - Prices at 0.49-0.51 are PERFECT for momentum trades — the market is unsure, but you have a directional signal.
 
-4. KELLY SIZING:
-   - Edge 5-10%: size = 3% of bankroll
-   - Edge 10-20%: size = 7% of bankroll  
-   - Edge 20%+: size = 12% of bankroll
-   - Live mode cap: $2.70 per trade.
+4. KELLY SIZING — BE AGGRESSIVE, maximize expected value:
+   - Edge 5-8%: size = 5% of bankroll
+   - Edge 8-15%: size = 7% of bankroll
+   - Edge 15-25%: size = 12% of bankroll  
+   - Edge 25%+: size = 18% of bankroll
+   - Live mode cap: $5.00 per trade. USE the full cap on high-conviction trades.
 
 5. PRIORITY: ≤5 min first, then 5-30 min, then 30-60 min, then 1-4h last.
 
@@ -652,17 +659,19 @@ DO NOT SKIP CYCLES. DO NOT return empty hypos if momentum exists. Find trades an
       const edge = h.edge || 0;
       let kellyFraction: number;
       if (edge >= 0.25) {
-        kellyFraction = 0.12;
+        kellyFraction = 0.18;
       } else if (edge >= 0.15) {
+        kellyFraction = 0.12;
+      } else if (edge >= 0.08) {
         kellyFraction = 0.07;
       } else {
-        kellyFraction = 0.03;
+        kellyFraction = 0.05;
       }
       const kellySize = Math.round(effectiveBankroll * kellyFraction * 100) / 100;
-      const cappedSize = liveTrading ? Math.min(kellySize, 2.70) : kellySize;
+      const cappedSize = liveTrading ? Math.min(kellySize, 5.00) : kellySize;
       // Ensure we don't exceed remaining wallet balance
       const remainingBalance = liveTrading ? Math.max(0, walletUsdc - totalAllocated) : Infinity;
-      const finalSize = liveTrading ? Math.min(cappedSize, remainingBalance - 0.50) : cappedSize; // keep $0.50 buffer
+      const finalSize = liveTrading ? Math.min(cappedSize, remainingBalance - 0.20) : cappedSize; // keep $0.20 buffer
       if (finalSize < 0.20) {
         console.log(`🚫 Skipping ${h.market}: insufficient balance (remaining: $${remainingBalance.toFixed(2)})`);
         h._skip = true;
@@ -729,8 +738,8 @@ DO NOT SKIP CYCLES. DO NOT return empty hypos if momentum exists. Find trades an
       // Wait 10 seconds for GTC orders to fill, then cancel unfilled ones
       // Short wait because most markets are 5-15 min — can't afford to wait long
       if (orderIds.length > 0) {
-        console.log(`⏳ Waiting 10s for ${orderIds.length} GTC orders to fill...`);
-        await new Promise((r) => setTimeout(r, 10000));
+        console.log(`⏳ Waiting 20s for ${orderIds.length} GTC orders to fill...`);
+        await new Promise((r) => setTimeout(r, 20000));
 
         // Cancel all open orders to prevent stale positions
         try {

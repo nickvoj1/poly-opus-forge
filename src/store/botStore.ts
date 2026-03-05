@@ -84,21 +84,21 @@ interface BotState {
   reset: () => void;
 }
 
-const DEFAULT_PROMPT = `JSON output ONLY. Aggressive Kelly Criterion strategy.
+const DEFAULT_PROMPT = `JSON output ONLY. Aggressive Kelly Criterion — MAXIMIZE PROFITS.
 
-EDGE DETECTION: TRUE_prob - market_price > 20% required.
+EDGE DETECTION: TRUE_prob - market_price > 15% required.
 - BTC 24h change: NEGATIVE → SELL/NO, POSITIVE → BUY/YES.
 - Volume spikes + liquidity shifts = secondary signals.
 - High-volume markets ONLY (>$10k volume or >$5k liquidity).
+- MULTI-TIMEFRAME CONFIRMATION: 5m + 15m alignment = high conviction.
 
-KELLY SIZING: f* = (p*b-q)/b → Aggressive 15% bankroll per trade.
-- Live: max $2.70/trade. Sim: 15% bankroll.
-- Target 5+ trades per cycle, 20+ trades/day.
-- Compound winners → 4 sessions/day → 250% daily target.
+KELLY SIZING: f* = (p*b-q)/b → Aggressive 18% bankroll on best trades.
+- Live: max $5.00/trade. Sim: 18% bankroll on 25%+ edge.
+- Target 3-5 HIGH-CONVICTION trades per cycle, compound winners.
+- Prioritize FEWER BIGGER trades over many small ones.
 - Max drawdown: 30%.
 
-JSON: {"cycle":N,"bankroll":X,"sharpe":Y,"mdd":Z,"hypos":[{"market":"exact name","action":"BUY/SELL","size":N,"pnl":0,"price":0.5,"edge":0.25,"kelly_f":0.15}],"rules":[".."],"log":".."}`;
-
+JSON: {"cycle":N,"bankroll":X,"sharpe":Y,"mdd":Z,"hypos":[{"market":"exact name","action":"BUY/SELL","size":N,"pnl":0,"price":0.5,"edge":0.25,"kelly_f":0.18}],"rules":[".."],"log":".."}`;
 export const useBotStore = create<BotState>((set) => ({
   running: false,
   cycle: 0,
