@@ -704,6 +704,7 @@ serve(async (req) => {
           price,
           resolvedNegRisk,
           storedCreds,
+          market,
         );
         return json(result, result.error ? 400 : 200);
       }
