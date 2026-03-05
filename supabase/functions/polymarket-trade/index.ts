@@ -447,7 +447,30 @@ async function redeemPositions(
   try {
     const { ethers } = await import("https://esm.sh/ethers@5.7.2");
     const pk = walletPrivateKey.startsWith("0x") ? walletPrivateKey : `0x${walletPrivateKey}`;
-    const wallet = new ethers.Wallet(pk, new ethers.providers.JsonRpcProvider("https://polygon-rpc.com"));
+    
+    // Try multiple RPC providers for reliability
+    const rpcUrls = [
+      "https://polygon-bor-rpc.publicnode.com",
+      "https://rpc.ankr.com/polygon",
+      "https://polygon.llamarpc.com",
+      "https://polygon-rpc.com",
+    ];
+    
+    let provider: any = null;
+    for (const rpcUrl of rpcUrls) {
+      try {
+        const p = new ethers.providers.JsonRpcProvider(rpcUrl);
+        await p.getBlockNumber(); // test connection
+        provider = p;
+        console.log(`✅ Connected to RPC: ${rpcUrl}`);
+        break;
+      } catch {
+        console.log(`⚠ RPC failed: ${rpcUrl}`);
+      }
+    }
+    if (!provider) throw new Error("All Polygon RPC providers failed");
+    
+    const wallet = new ethers.Wallet(pk, provider);
 
     const CTF_ADDRESS = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045";
     const USDC_E = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174";
@@ -467,60 +490,55 @@ async function redeemPositions(
 
     const funderAddress = proxyAddress || wallet.address;
 
-    if (proxyAddress && proxyAddress.toLowerCase() !== wallet.address.toLowerCase()) {
-      // Proxy (Safe) wallet — need to call execTransaction on the Safe
-      console.log(`🔄 Redeeming via Safe proxy ${proxyAddress} for condition ${conditionId.substring(0, 16)}...`);
+    // Get current gas price for Polygon — enforce minimum 30 gwei tip (network requires ~25 gwei)
+    const feeData = await provider.getFeeData();
+    const minTip = ethers.utils.parseUnits("35", "gwei");
+    const minMax = ethers.utils.parseUnits("150", "gwei");
+    const maxPriorityFee = feeData.maxPriorityFeePerGas && feeData.maxPriorityFeePerGas.gt(minTip) ? feeData.maxPriorityFeePerGas : minTip;
+    const maxFee = feeData.maxFeePerGas && feeData.maxFeePerGas.gt(minMax) ? feeData.maxFeePerGas : minMax;
+    const gasOverrides = { gasLimit: 500000, maxPriorityFeePerGas: maxPriorityFee, maxFeePerGas: maxFee };
+    console.log(`⛽ Gas: maxPriority=${ethers.utils.formatUnits(maxPriorityFee, "gwei")}gwei, maxFee=${ethers.utils.formatUnits(maxFee, "gwei")}gwei`);
 
-      const safeInterface = new ethers.utils.Interface([
-        "function execTransaction(address to, uint256 value, bytes data, uint8 operation, uint256 safeTxGas, uint256 baseGas, uint256 gasPrice, address gasToken, address payable refundReceiver, bytes signatures) returns (bool success)",
-        "function nonce() view returns (uint256)",
-        "function getTransactionHash(address to, uint256 value, bytes data, uint8 operation, uint256 safeTxGas, uint256 baseGas, uint256 gasPrice, address gasToken, address refundReceiver, uint256 _nonce) view returns (bytes32)",
+    if (proxyAddress && proxyAddress.toLowerCase() !== wallet.address.toLowerCase()) {
+      console.log(`🔄 Redeeming via proxy ${proxyAddress} for condition ${conditionId.substring(0, 16)}...`);
+
+      const proxyInterface = new ethers.utils.Interface([
+        "function execute(address to, uint256 value, bytes data) returns (bytes)",
       ]);
 
-      const safeContract = new ethers.Contract(proxyAddress, safeInterface, wallet);
-
-      // Get nonce
-      const nonce = await safeContract.nonce();
-
-      // Get transaction hash for signing
-      const txHash = await safeContract.getTransactionHash(
-        CTF_ADDRESS, 0, redeemData, 0, 0, 0, 0,
-        ethers.constants.AddressZero, ethers.constants.AddressZero, nonce,
-      );
-
-      // Sign the hash (EIP-191 style for Safe)
-      const sig = await wallet.signMessage(ethers.utils.arrayify(txHash));
-      // Convert to Safe signature format (v += 4 for eth_sign)
-      const sigBytes = ethers.utils.arrayify(sig);
-      sigBytes[64] += 4;
-      const safeSig = ethers.utils.hexlify(sigBytes);
-
-      // Execute the transaction
-      const tx = await safeContract.execTransaction(
-        CTF_ADDRESS, 0, redeemData, 0, 0, 0, 0,
-        ethers.constants.AddressZero, ethers.constants.AddressZero, safeSig,
-        { gasLimit: 500000 },
-      );
-
-      console.log(`📝 Redeem tx sent: ${tx.hash}`);
-      const receipt = await tx.wait();
-      console.log(`✅ Redeem confirmed: ${receipt.transactionHash} (gas: ${receipt.gasUsed.toString()})`);
-
-      return { success: true, txHash: receipt.transactionHash };
+      try {
+        const proxyContract = new ethers.Contract(proxyAddress, proxyInterface, wallet);
+        const tx = await proxyContract.execute(CTF_ADDRESS, 0, redeemData, gasOverrides);
+        console.log(`📝 Redeem tx sent via proxy: ${tx.hash}`);
+        const receipt = await tx.wait();
+        console.log(`✅ Redeem confirmed: ${receipt.transactionHash} (gas: ${receipt.gasUsed.toString()})`);
+        return { success: true, txHash: receipt.transactionHash };
+      } catch (proxyErr: any) {
+        console.log(`⚠ Proxy execute failed: ${proxyErr.message}, trying direct EOA...`);
+        try {
+          const ctfContract = new ethers.Contract(CTF_ADDRESS, ctfInterface, wallet);
+          const tx = await ctfContract.redeemPositions(
+            USDC_E, PARENT_COLLECTION_ID, conditionId, INDEX_SETS, gasOverrides,
+          );
+          console.log(`📝 Redeem tx sent (EOA fallback): ${tx.hash}`);
+          const receipt = await tx.wait();
+          console.log(`✅ Redeem confirmed: ${receipt.transactionHash}`);
+          return { success: true, txHash: receipt.transactionHash };
+        } catch (eoaErr: any) {
+          console.error(`❌ Both proxy and EOA redeem failed`);
+          return { success: false, error: `Proxy: ${proxyErr.message} | EOA: ${eoaErr.message}` };
+        }
+      }
     } else {
       // Direct EOA wallet — call CTF contract directly
       console.log(`🔄 Redeeming directly from EOA for condition ${conditionId.substring(0, 16)}...`);
-
       const ctfContract = new ethers.Contract(CTF_ADDRESS, ctfInterface, wallet);
       const tx = await ctfContract.redeemPositions(
-        USDC_E, PARENT_COLLECTION_ID, conditionId, INDEX_SETS,
-        { gasLimit: 300000 },
+        USDC_E, PARENT_COLLECTION_ID, conditionId, INDEX_SETS, gasOverrides,
       );
-
       console.log(`📝 Redeem tx sent: ${tx.hash}`);
       const receipt = await tx.wait();
       console.log(`✅ Redeem confirmed: ${receipt.transactionHash} (gas: ${receipt.gasUsed.toString()})`);
-
       return { success: true, txHash: receipt.transactionHash };
     }
   } catch (e) {
