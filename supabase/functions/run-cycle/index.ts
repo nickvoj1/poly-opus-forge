@@ -190,8 +190,10 @@ async function executeTrade(
 
   const action = (hypo.action || "BUY").toUpperCase();
   const isSell = action === "SELL" || action === "BUY_NO";
-  const tokenId = isSell ? tokenIds[1] || tokenIds[0] : tokenIds[0];
-  const tradeSide = isSell ? "SELL" : "BUY";
+  // CRITICAL: On Polymarket, to bet DOWN you BUY the NO token (tokenIds[1])
+  // You can't SELL tokens you don't own. So "SELL" in our strategy = BUY NO token.
+  const tokenId = isSell ? (tokenIds[1] || tokenIds[0]) : tokenIds[0];
+  const tradeSide = "BUY"; // Always BUY — either YES token (bet up) or NO token (bet down)
 
   // Get live midpoint price
   let price = hypo.price || 0.5;
