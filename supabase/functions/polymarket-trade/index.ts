@@ -105,12 +105,18 @@ function isCryptoUpDownMarket(marketName?: string): boolean {
   if (!marketName) return false;
   const lower = marketName.toLowerCase();
   const cryptoPatterns = [
-    /\b(btc|bitcoin|eth|ethereum|sol|solana|xrp|doge|bnb|ada|avax|matic|link|dot)\b/,
+    /\b(btc|bitcoin|eth|ethereum|sol|solana|xrp|doge|dogecoin|bnb|ada|cardano|avax|avalanche|matic|polygon|link|chainlink|dot|polkadot|ltc|litecoin|uni|uniswap|aave|shib|pepe|sui|apt|aptos|arb|arbitrum|op|optimism)\b/,
     /\b(crypto|coin|token)\b/,
   ];
-  const upDownPatterns = [/above|below|over|under|hit|reach|price|by .*(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/i];
+  const upDownPatterns = [
+    /up\s+or\s+down/i,
+    /above|below|over|under|hit|reach|price/i,
+    /by .*(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/i,
+    /\d+[:\s]*(am|pm)\s*(et|est|edt|utc|pt|pst|ct|cst)/i,
+  ];
   const isCrypto = cryptoPatterns.some(p => p.test(lower));
   const isUpDown = upDownPatterns.some(p => p.test(lower));
+  console.log(`isCryptoUpDownMarket("${marketName.substring(0, 50)}"): crypto=${isCrypto}, upDown=${isUpDown}`);
   return isCrypto && isUpDown;
 }
 
