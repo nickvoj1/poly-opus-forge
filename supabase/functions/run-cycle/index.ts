@@ -520,12 +520,12 @@ STRATEGY: MOMENTUM-BASED TRADING
 
 5. PRIORITY: ≤5 min first, then 5-30 min, then 30-60 min, then 1-4h last.
 
-6. OUTPUT FORMAT:
+6. OUTPUT FORMAT — PUT ALL TRADES IN THE hypos ARRAY. Do NOT describe trades in "log" without adding them to "hypos". Every trade you mention MUST be in the hypos array:
    {"cycle":N, "bankroll":N, "sharpe":N, "mdd":N, "hypos":[...], "rules":[".."], "log":".."}
 
    Each hypo: {"market":"exact name", "action":"BUY"/"SELL", "size":N, "pnl":0, "price":N, "edge":N, "kelly_f":N, "timeframe":"5m"/"15m"/"1h", "reasoning":".."}
 
-DO NOT SKIP CYCLES. If momentum exists on ANY asset, there is a trade. Find it.`,
+DO NOT SKIP CYCLES. DO NOT return empty hypos if momentum exists. Find trades and PUT THEM IN THE ARRAY.`,
           },
           { role: "user", content: userMessage },
         ],
@@ -631,7 +631,7 @@ DO NOT SKIP CYCLES. If momentum exists on ANY asset, there is a trade. Find it.`
       // Ensure we don't exceed remaining wallet balance
       const remainingBalance = liveTrading ? Math.max(0, walletUsdc - totalAllocated) : Infinity;
       const finalSize = liveTrading ? Math.min(cappedSize, remainingBalance - 0.50) : cappedSize; // keep $0.50 buffer
-      if (finalSize < 0.50) {
+      if (finalSize < 0.20) {
         console.log(`🚫 Skipping ${h.market}: insufficient balance (remaining: $${remainingBalance.toFixed(2)})`);
         h._skip = true;
         continue;
