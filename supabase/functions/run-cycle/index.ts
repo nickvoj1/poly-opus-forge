@@ -419,13 +419,25 @@ serve(async (req) => {
 
     const effectiveBankroll = liveTrading ? walletUsdc : bankroll;
 
+    // Fetch existing pending bets to avoid duplicates
+    const sb = createClient(supabaseUrl, supabaseKey);
+    const { data: pendingBets } = await sb.from("bets").select("market").eq("status", "pending").eq("is_live", liveTrading);
+    const existingMarkets = new Set((pendingBets || []).map((b: any) => b.market));
+    if (existingMarkets.size > 0) {
+      console.log(`📋 Existing pending bets: ${existingMarkets.size} markets (will skip duplicates)`);
+    }
+
     const [polyResult, cryptoData] = await Promise.all([fetchPolymarket(), fetchCryptoPrices()]);
 
     const polyData = polyResult.text;
     const marketsMap = polyResult.marketsMap;
 
+    const existingMarketsStr = existingMarkets.size > 0
+      ? `\nALREADY HAVE POSITIONS IN (DO NOT TRADE THESE): ${[...existingMarkets].join(", ")}`
+      : "";
+
     const userMessage = `Cycle ${cycle}. Bankroll: $${effectiveBankroll.toFixed(2)}.${liveTrading ? ` WALLET BALANCE: $${walletUsdc.toFixed(2)} USDC. Do NOT place trades exceeding this balance.` : ""}
-Trade markets ending ≤60 min. Use 5-MINUTE candle data for direction, NOT just 24h trend.
+Trade markets ending ≤60 min. Use 5-MINUTE candle data for direction, NOT just 24h trend.${existingMarketsStr}
 
 LIVE DATA:
 ${polyData}
