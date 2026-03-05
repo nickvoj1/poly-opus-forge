@@ -56,11 +56,9 @@ async function fetchNegRiskFromGamma(tokenId: string, marketName?: string): Prom
         if (neg !== undefined && neg !== null) {
           return neg === true || neg === "true";
         }
-        // Gamma returned the market but neg_risk is undefined — check the question text
-        if (isCryptoUpDownMarket(question)) {
-          console.log(`Gamma neg_risk undefined but question matches crypto pattern → forcing negRisk=true`);
-          return true;
-        }
+        // neg_risk is undefined — default to false (don't force true based on name patterns)
+        console.log(`Gamma neg_risk undefined → defaulting to false`);
+        return false;
       }
     }
 
@@ -75,27 +73,14 @@ async function fetchNegRiskFromGamma(tokenId: string, marketName?: string): Prom
         if (neg !== undefined && neg !== null) {
           return neg === true || neg === "true";
         }
-        if (isCryptoUpDownMarket(question)) {
-          console.log(`Gamma neg_risk undefined but question matches crypto pattern → forcing negRisk=true`);
-          return true;
-        }
+        console.log(`Gamma neg_risk undefined → defaulting to false`);
+        return false;
       }
-    }
-
-    // If market name was provided and matches crypto pattern, force true
-    if (marketName && isCryptoUpDownMarket(marketName)) {
-      console.log(`Gamma lookup returned no neg_risk, but market name matches crypto pattern → forcing negRisk=true`);
-      return true;
     }
 
     return null;
   } catch (e) {
     console.error("Gamma negRisk lookup error:", e);
-    // Even on error, if market name matches crypto pattern, force true
-    if (marketName && isCryptoUpDownMarket(marketName)) {
-      console.log(`Gamma lookup failed but market matches crypto pattern → forcing negRisk=true`);
-      return true;
-    }
     return null;
   }
 }
@@ -307,10 +292,9 @@ async function signAndSubmitOrder(
     if (gammaNegRisk !== null) {
       negRisk = gammaNegRisk;
       console.log(`negRisk from Gamma API: ${negRisk}`);
-    } else if (isCryptoUpDownMarket(marketName)) {
-      // Gamma returned null but market name matches crypto pattern
-      negRisk = true;
-      console.log(`negRisk forced true via market name pattern: "${marketName?.substring(0, 50)}"`);
+    } else {
+      // Gamma returned null (market not found) — default to false
+      console.log(`Gamma returned null, defaulting negRisk=false`);
     }
 
     // 2. Fetch tick size and fee rate via proxy, and CLOB negRisk as fallback
@@ -340,15 +324,17 @@ async function signAndSubmitOrder(
     // Round price to tick
     const tickedPrice = Math.round(price / tickSize) * tickSize;
     const finalPrice = Math.max(tickSize, Math.min(1 - tickSize, tickedPrice));
+    // Round size to whole number to ensure clean USDC amounts (max 2 decimal accuracy for maker)
+    const roundedSize = Math.max(1, Math.floor(size));
     const tradeSide = side === "BUY" ? ClobSide.BUY : ClobSide.SELL;
 
-    console.log(`Signing order: ${side} $${size} @ $${finalPrice} (tick=${tickSize}, fee=${feeRateBps}, negRisk=${negRisk})`);
+    console.log(`Signing order: ${side} $${roundedSize} @ $${finalPrice} (tick=${tickSize}, fee=${feeRateBps}, negRisk=${negRisk})`);
 
     // Strategy A: Try using SDK's createAndPostOrder directly (handles serialization correctly)
     try {
       console.log("Attempting SDK createAndPostOrder (direct)...");
       const sdkResult = await client.createAndPostOrder(
-        { tokenID: tokenId, price: finalPrice, size, side: tradeSide, feeRateBps },
+        { tokenID: tokenId, price: finalPrice, size: roundedSize, side: tradeSide, feeRateBps },
         { tickSize: `${tickSize}`, negRisk },
         OrderType.FAK,
       );
@@ -364,7 +350,7 @@ async function signAndSubmitOrder(
 
     // Strategy B: Sign with SDK, submit manually via proxy
     const signedOrder = await client.createOrder(
-      { tokenID: tokenId, price: finalPrice, size, side: tradeSide, orderType: OrderType.FAK, feeRateBps },
+      { tokenID: tokenId, price: finalPrice, size: roundedSize, side: tradeSide, orderType: OrderType.FAK, feeRateBps },
       { tickSize: `${tickSize}`, negRisk },
     );
 
@@ -690,8 +676,8 @@ serve(async (req) => {
         // Default negRisk=true for crypto up/down markets if not explicitly set
         let resolvedNegRisk = negRisk;
         if (resolvedNegRisk === undefined || resolvedNegRisk === null) {
-          resolvedNegRisk = isCryptoUpDownMarket(market) ? true : false;
-          if (resolvedNegRisk) console.log(`Auto-detected crypto up/down market, forcing negRisk=true: ${market}`);
+          resolvedNegRisk = false; // Default to false — Gamma API will resolve the actual value in signAndSubmitOrder
+          console.log(`negRisk not specified, defaulting to false (will be resolved by Gamma API)`);
         }
 
         // Strategy 1: Use relay server's /trade endpoint (it signs + submits from non-blocked region)
