@@ -11,15 +11,15 @@ async function fetchPolymarket(): Promise<{ text: string; marketsMap: Record<str
   try {
     const now = new Date();
     const endMin = now.toISOString();
-    const soon5 = new Date(now.getTime() + 5 * 60 * 1000).toISOString();
+    const soon60 = new Date(now.getTime() + 60 * 60 * 1000).toISOString();
 
-    // Fetch ONLY markets ending in ≤5 minutes + crypto-specific searches (filtered later)
+    // Fetch markets ending in ≤60 minutes + crypto-specific searches
     const queries = [
-      // Primary: ending ≤5 min
+      // Primary: ending ≤60 min
       fetch(
-        `https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=100&order=endDate&ascending=true&end_date_min=${endMin}&end_date_max=${soon5}`,
+        `https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=100&order=endDate&ascending=true&end_date_min=${endMin}&end_date_max=${soon60}`,
       ),
-      // Crypto-specific searches (will be filtered to ≤5 min)
+      // Crypto-specific searches
       fetch(`https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=30&order=volume&ascending=false&tag=crypto`),
       fetch(`https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=20&query=Bitcoin`),
       fetch(`https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=20&query=Ethereum`),
@@ -56,26 +56,51 @@ async function fetchPolymarket(): Promise<{ text: string; marketsMap: Record<str
       return `${m.question} | conditionId: ${m.conditionId || "?"} | price: ${m.outcomePrices} | vol: $${Math.round(m.volumeNum || 0)} | liq: $${Math.round(m.liquidityNum || 0)} | ENDS IN: ${minsLeft} min`;
     };
 
-    // Filter to ONLY markets ending in ≤5 minutes
-    const fiveMinMs = 5 * 60 * 1000;
+    // Filter to markets ending ≤60 min
+    const maxMs = 60 * 60 * 1000;
     const eligible = allMarkets.filter((m) => {
       const end = m.endDate || m.end_date_iso;
       if (!end) return false;
       const diff = new Date(end).getTime() - now.getTime();
-      return diff > 0 && diff <= fiveMinMs;
+      return diff > 0 && diff <= maxMs;
     });
 
-    // Sort by volume
+    // Categorize by urgency
+    const under5 = eligible.filter((m) => {
+      const end = m.endDate || m.end_date_iso;
+      return new Date(end).getTime() - now.getTime() <= 5 * 60 * 1000;
+    });
+    const under30 = eligible.filter((m) => {
+      const end = m.endDate || m.end_date_iso;
+      const diff = new Date(end).getTime() - now.getTime();
+      return diff > 5 * 60 * 1000 && diff <= 30 * 60 * 1000;
+    });
+    const under60 = eligible.filter((m) => {
+      const end = m.endDate || m.end_date_iso;
+      const diff = new Date(end).getTime() - now.getTime();
+      return diff > 30 * 60 * 1000 && diff <= 60 * 60 * 1000;
+    });
+
     const byVol = (a: any, b: any) => (b.volumeNum || 0) - (a.volumeNum || 0);
 
-    const section = eligible.length
-      ? `⚡ ENDING ≤5 MIN (${eligible.length}):\n${eligible.sort(byVol).slice(0, 30).map(formatMarket).join("\n")}`
-      : "No markets ending in ≤5 minutes found.";
+    const sections = [
+      under5.length
+        ? `⚡ ENDING ≤5 MIN (${under5.length}):\n${under5.sort(byVol).slice(0, 15).map(formatMarket).join("\n")}`
+        : "",
+      under30.length
+        ? `🕐 ENDING 5-30 MIN (${under30.length}):\n${under30.sort(byVol).slice(0, 15).map(formatMarket).join("\n")}`
+        : "",
+      under60.length
+        ? `⏳ ENDING 30-60 MIN (${under60.length}):\n${under60.sort(byVol).slice(0, 10).map(formatMarket).join("\n")}`
+        : "",
+    ]
+      .filter(Boolean)
+      .join("\n\n");
 
-    console.log(`📊 Scanned ${allMarkets.length} unique markets → ${eligible.length} ending in ≤5 min`);
+    console.log(`📊 Scanned ${allMarkets.length} unique markets → ${eligible.length} ending ≤60 min (${under5.length} ≤5m, ${under30.length} 5-30m, ${under60.length} 30-60m)`);
 
     return {
-      text: `POLYMARKET CRYPTO MARKETS ENDING ≤5 MIN (${eligible.length} total):\n${section}`,
+      text: `POLYMARKET CRYPTO MARKETS ENDING ≤60 MIN (${eligible.length} total):\n${sections || "No active markets found."}`,
       marketsMap,
     };
   } catch (e) {
@@ -84,21 +109,40 @@ async function fetchPolymarket(): Promise<{ text: string; marketsMap: Record<str
   }
 }
 
+// Fetch 5-minute candle data from Binance for short-term momentum
 async function fetchCryptoPrices(): Promise<string> {
   const symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "DOGEUSDT", "ADAUSDT", "AVAXUSDT"];
   try {
     const results = await Promise.all(
       symbols.map(async (sym) => {
         try {
-          const res = await fetch(`https://api.binance.com/api/v3/ticker/24hr?symbol=${sym}`);
-          const d = await res.json();
-          return `${sym}: $${parseFloat(d.lastPrice).toFixed(2)} (${d.priceChangePercent > 0 ? "+" : ""}${d.priceChangePercent}% 24h, vol=$${Math.round(parseFloat(d.quoteVolume) / 1e6)}M)`;
+          // Fetch both 24h ticker AND last 3 x 5-min candles
+          const [tickerRes, klinesRes] = await Promise.all([
+            fetch(`https://api.binance.com/api/v3/ticker/24hr?symbol=${sym}`),
+            fetch(`https://api.binance.com/api/v3/klines?symbol=${sym}&interval=5m&limit=3`),
+          ]);
+          const d = await tickerRes.json();
+          const klines = await klinesRes.json();
+
+          // Parse 5m candles: [openTime, open, high, low, close, volume, ...]
+          let candle5m = "";
+          if (Array.isArray(klines) && klines.length >= 2) {
+            const prev = klines[klines.length - 2]; // last completed candle
+            const curr = klines[klines.length - 1]; // current candle
+            const prevClose = parseFloat(prev[4]);
+            const currClose = parseFloat(curr[4]);
+            const change5m = ((currClose - prevClose) / prevClose * 100).toFixed(3);
+            const prevChange = ((prevClose - parseFloat(prev[1])) / parseFloat(prev[1]) * 100).toFixed(3);
+            candle5m = ` | 5m: ${change5m > "0" ? "+" : ""}${change5m}% (prev5m: ${prevChange > "0" ? "+" : ""}${prevChange}%)`;
+          }
+
+          return `${sym}: $${parseFloat(d.lastPrice).toFixed(2)} (24h: ${d.priceChangePercent > 0 ? "+" : ""}${d.priceChangePercent}%${candle5m}, vol=$${Math.round(parseFloat(d.quoteVolume) / 1e6)}M)`;
         } catch {
           return `${sym}: error`;
         }
       }),
     );
-    return `CRYPTO PRICES:\n${results.join("\n")}`;
+    return `CRYPTO PRICES (with 5-minute candle momentum):\n${results.join("\n")}`;
   } catch {
     return "CRYPTO PRICES: fetch error";
   }
@@ -114,7 +158,6 @@ async function executeTrade(
   const meta = marketsMap[hypo.market] || {};
   let tokenIds: string[] = [];
 
-  // Get token IDs from market data
   const rawIds = hypo.clobTokenIds || meta.clobTokenIds;
   if (rawIds) {
     try {
@@ -122,7 +165,6 @@ async function executeTrade(
     } catch {}
   }
 
-  // If no token IDs from market data, try fetching from Gamma API
   if (tokenIds.length === 0) {
     const conditionId = hypo.condition_id || meta.conditionId;
     if (conditionId) {
@@ -131,10 +173,9 @@ async function executeTrade(
         if (res.ok) {
           const markets = await res.json();
           if (markets[0]?.clobTokenIds) {
-            const ids =
-              typeof markets[0].clobTokenIds === "string"
-                ? JSON.parse(markets[0].clobTokenIds)
-                : markets[0].clobTokenIds;
+            const ids = typeof markets[0].clobTokenIds === "string"
+              ? JSON.parse(markets[0].clobTokenIds)
+              : markets[0].clobTokenIds;
             tokenIds = ids;
           }
         }
@@ -147,7 +188,6 @@ async function executeTrade(
     return { status: "skipped", price: hypo.price || 0.5, error: "no_token_ids" };
   }
 
-  // For SELL/BUY_NO, use the NO token (index 1); for BUY, use YES token (index 0)
   const action = (hypo.action || "BUY").toUpperCase();
   const isSell = action === "SELL" || action === "BUY_NO";
   const tokenId = isSell ? tokenIds[1] || tokenIds[0] : tokenIds[0];
@@ -172,7 +212,6 @@ async function executeTrade(
 
   console.log(`🔄 Executing: ${tradeSide} ${adjustedSize} of ${hypo.market} @ $${price.toFixed(4)}`);
 
-  // Call polymarket-trade edge function to place the order
   try {
     const tradeRes = await fetch(`${supabaseUrl}/functions/v1/polymarket-trade`, {
       method: "POST",
@@ -193,7 +232,7 @@ async function executeTrade(
     const result = await tradeRes.json();
 
     if (result?.submitted) {
-      console.log(`✅ FILLED: ${tradeSide} ${hypo.size} @ $${result.finalPrice} (${result.via})`);
+      console.log(`✅ FILLED: ${tradeSide} ${adjustedSize} @ $${result.finalPrice} (${result.via})`);
       return { status: "filled", price: result.finalPrice || price, orderID: result.result?.orderID };
     } else {
       console.error(`❌ Trade failed: ${result?.error || "unknown"}`);
@@ -203,6 +242,82 @@ async function executeTrade(
     console.error(`❌ Trade error: ${e}`);
     return { status: "failed", price, error: e instanceof Error ? e.message : String(e) };
   }
+}
+
+// Check and close winning positions (sell when in profit)
+async function closeWinningPositions(
+  supabaseUrl: string,
+  supabaseKey: string,
+): Promise<{ closed: number; pnl: number }> {
+  let closed = 0;
+  let totalPnl = 0;
+
+  try {
+    // Get current positions via polymarket-trade
+    const posRes = await fetch(`${supabaseUrl}/functions/v1/polymarket-trade`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${supabaseKey}`,
+        apikey: supabaseKey,
+      },
+      body: JSON.stringify({ action: "get-positions" }),
+    });
+
+    const positions = await posRes.json();
+    if (!Array.isArray(positions) || positions.length === 0) return { closed: 0, pnl: 0 };
+
+    for (const pos of positions) {
+      const size = Number(pos.size || 0);
+      const avgPrice = Number(pos.avg_price || 0);
+      const curPrice = Number(pos.cur_price || pos.price || 0);
+
+      if (size <= 0 || avgPrice <= 0) continue;
+
+      const unrealizedPnl = (curPrice - avgPrice) * size;
+      const pnlPct = (curPrice - avgPrice) / avgPrice;
+
+      // Close if profit > 10% or if market is about to expire and we're in profit
+      if (pnlPct > 0.10) {
+        console.log(`💰 Closing winning position: ${pos.title || pos.market} | PnL: $${unrealizedPnl.toFixed(2)} (${(pnlPct * 100).toFixed(1)}%)`);
+
+        try {
+          const tokenId = pos.token_id || pos.asset;
+          if (!tokenId) continue;
+
+          // Sell the position
+          const sellRes = await fetch(`${supabaseUrl}/functions/v1/polymarket-trade`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${supabaseKey}`,
+              apikey: supabaseKey,
+            },
+            body: JSON.stringify({
+              action: "place-trade",
+              tokenId,
+              side: "SELL",
+              size: Math.floor(size),
+              price: curPrice * 0.98, // Sell slightly below market for quick fill
+            }),
+          });
+
+          const sellResult = await sellRes.json();
+          if (sellResult?.submitted) {
+            closed++;
+            totalPnl += unrealizedPnl;
+            console.log(`✅ Closed position: ${pos.title || pos.market} for $${unrealizedPnl.toFixed(2)} profit`);
+          }
+        } catch (e) {
+          console.error(`Failed to close position: ${e}`);
+        }
+      }
+    }
+  } catch (e) {
+    console.error("Error checking positions:", e);
+  }
+
+  return { closed, pnl: totalPnl };
 }
 
 serve(async (req) => {
@@ -222,13 +337,21 @@ serve(async (req) => {
     const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
     const supabaseKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
+    // Step 0: Close any winning positions before new trades
+    if (liveTrading) {
+      const closeResult = await closeWinningPositions(supabaseUrl, supabaseKey);
+      if (closeResult.closed > 0) {
+        console.log(`💰 Closed ${closeResult.closed} winning positions for $${closeResult.pnl.toFixed(2)} total profit`);
+      }
+    }
+
     const [polyResult, cryptoData] = await Promise.all([fetchPolymarket(), fetchCryptoPrices()]);
 
     const polyData = polyResult.text;
     const marketsMap = polyResult.marketsMap;
 
     const userMessage = `Cycle ${cycle}. Bankroll: $${bankroll}.
-⚡ ONLY trade markets ending in ≤5 MINUTES. Aggressive Kelly sizing. Max $2.70 per trade.
+Trade markets ending ≤60 min. Use 5-MINUTE candle data for direction, NOT just 24h trend.
 
 LIVE DATA:
 ${polyData}
@@ -249,58 +372,68 @@ ${systemPrompt}`;
         messages: [
           {
             role: "system",
-            content: `You are an aggressive quantitative trading engine for Polymarket. You MUST respond with valid JSON only. No markdown, no code blocks.
+            content: `You are a disciplined quantitative trading engine for Polymarket. You MUST respond with valid JSON only. No markdown, no code blocks.
 
-KELLY CRITERION STRATEGY (Target: 250% daily return):
+STRATEGY: MISPRICED ODDS + SHORT-TERM MOMENTUM
 
-1. EDGE DETECTION:
-   - Edge = TRUE_prob - market_price. Minimum edge threshold: 8% (0.08).
-   - BTC 24h change is PRIMARY signal: Negative → bet DOWN/SELL, Positive → bet UP/BUY.
-   - Cross-asset correlation: If BTC is up, ETH/SOL/XRP likely follow. Do NOT bet against BTC trend unless you have specific divergence evidence.
-   - Time decay: markets ending <10 min with mispriced odds = highest edge.
-   - You MUST explain your reasoning for each trade in the "reasoning" field.
+1. EDGE DETECTION (use 5-MINUTE candle data, NOT 24h):
+   - The "5m" field shows the LAST 5-minute price change. This is your PRIMARY signal for markets ending in ≤30 min.
+   - "prev5m" shows the candle before that — use for momentum confirmation.
+   - 24h change is SECONDARY — only use for markets ending 30-60 min.
+   - Edge = |TRUE_prob - market_price|. Minimum edge: 15% (0.15) for ≤5min markets, 10% for longer.
+   - CRITICAL: 5-min binary markets are NOISY. Only trade when odds are CLEARLY mispriced.
 
-2. KELLY SIZING (VARIABLE — NOT FLAT):
-   - f* = (p*b - q) / b where p=win_prob, q=1-p, b=payout odds.
-   - Size MUST vary by edge strength:
-     * Edge 8-12%: size = 5% of bankroll
-     * Edge 12-20%: size = 10% of bankroll
-     * Edge 20%+: size = 15% of bankroll (max)
-   - Live mode hard cap: $2.70 per trade. Sim mode: use % of bankroll.
-   - NEVER use flat sizing. Each trade size must reflect its calculated kelly_f.
+2. DIRECTIONAL SIGNALS (5-minute candles):
+   - 5m change POSITIVE + prev5m POSITIVE → strong UP momentum → BUY if price < 0.30
+   - 5m change NEGATIVE + prev5m NEGATIVE → strong DOWN momentum → SELL if price > 0.70
+   - 5m change MIXED (one up, one down) → CHOPPY → only trade if price is extremely mispriced (<0.20 or >0.80 mapped to 0.20)
+   - If 5m candle is flat (< ±0.05%) → NO CLEAR SIGNAL → skip or trade only extreme mispricing
 
-3. MARKET SELECTION:
-   - ONLY CRYPTO markets. Ignore ALL non-crypto (politics, sports, weather, etc.).
-   - ONLY markets ending in ≤5 MINUTES. Do NOT trade ANY market ending later than 5 min.
-   - ONLY high-volume markets (volume > $10,000 or liquidity > $5,000).
-   - STRICT PRICE BOUNDS: Only trade sides priced between 0.15 and 0.75. REJECT any trade outside this range.
-   - Parse "outcomePrices" as "[YesPrice, NoPrice]". Choose the side within 0.15-0.75.
-   - Output 2-5 hypos. If edge is marginal (8-12%), trade with smaller size.
+3. DIVERSIFICATION (MANDATORY):
+   - You MUST mix BUY and SELL trades. Do NOT bet all in one direction.
+   - If placing 4 trades, at least 1 must be in the opposite direction.
+   - Different assets can have different short-term momentum — trade them independently.
 
-4. ACTIONS:
-   - BUY = buy the YES token (betting market resolves YES/Up).
-   - SELL = buy the NO token (betting market resolves NO/Down).
-   - Be explicit: if you think a crypto will go DOWN, use action "SELL".
+4. STRICT PRICE BOUNDS — ONLY TRADE MISPRICED ODDS:
+   - For ≤5 min markets: ONLY trade if price < 0.30 (BUY) or price > 0.70 (SELL as mapped)
+   - For 5-30 min markets: ONLY trade if price < 0.35 (BUY) or price > 0.65 (SELL)
+   - For 30-60 min markets: standard 0.15-0.75 range acceptable
+   - These bounds ensure you only enter when odds are genuinely mispriced.
 
-5. OUTPUT FORMAT (all fields required):
+5. KELLY SIZING (VARIABLE):
+   - Edge 10-15%: size = 3% of bankroll (conservative)
+   - Edge 15-25%: size = 7% of bankroll
+   - Edge 25%+: size = 12% of bankroll (max)
+   - Live mode hard cap: $2.70 per trade.
+
+6. ACTIONS:
+   - BUY = buy YES token (bet UP/Yes). Use when crypto 5m momentum is UP and price is LOW.
+   - SELL = buy NO token (bet DOWN/No). Use when crypto 5m momentum is DOWN and price is HIGH.
+
+7. OUTPUT FORMAT (all fields required):
    {"cycle":N, "bankroll":N, "sharpe":N, "mdd":N, "hypos":[...], "rules":["rule1","rule2"], "log":"summary"}
 
-   Each hypo MUST include ALL of these fields:
+   Each hypo MUST include:
    - "market": exact market question string
    - "action": "BUY" or "SELL"
-   - "size": dollar amount (variable based on edge, NOT flat)
+   - "size": dollar amount (variable, NOT flat)
    - "pnl": 0
-   - "price": entry price (must be 0.15-0.75)
-   - "edge": calculated edge as decimal (e.g. 0.15)
-   - "kelly_f": actual kelly fraction used (e.g. 0.05, 0.10, 0.15)
-   - "reasoning": 1-2 sentence explanation of WHY this trade has edge
+   - "price": entry price
+   - "edge": calculated edge as decimal
+   - "kelly_f": fraction used
+   - "reasoning": explain 5m candle signal + why price is mispriced
 
-6. SHARPE & MDD:
-   - "sharpe": estimate rolling Sharpe ratio from recent cycles. If cycle 1, estimate from expected edge.
-   - "mdd": max drawdown % from peak bankroll. If cycle 1, set to 0.
-   - "rules": list 2-4 key rules/observations driving this cycle's decisions.
+8. SHARPE & MDD:
+   - "sharpe": estimated from recent performance
+   - "mdd": max drawdown %
+   - "rules": 2-4 observations
 
-CRITICAL: ONLY trade CRYPTO markets ending in ≤5 MINUTES. Use EXACT market question in "market" field. Variable sizing is MANDATORY. If no markets end in ≤5 min, return empty hypos.`,
+CRITICAL RULES:
+- Use 5-MINUTE candle momentum, NOT 24h trend, for direction on short markets.
+- ONLY trade CLEARLY mispriced odds. If in doubt, SKIP.
+- DIVERSIFY: mix BUY and SELL. Never all same direction.
+- If no markets are mispriced enough, return EMPTY hypos. It's better to skip than lose.
+- Use EXACT market question in "market" field.`,
           },
           { role: "user", content: userMessage },
         ],
@@ -352,8 +485,8 @@ CRITICAL: ONLY trade CRYPTO markets ending in ≤5 MINUTES. Use EXACT market que
     const preFilterCount = parsed.hypos.length;
     parsed.hypos = parsed.hypos.filter((h: any) => {
       const price = h.price || 0;
-      if (price < 0.15 || price > 0.75) {
-        console.log(`🚫 Rejected ${h.market}: price ${price} outside 0.15-0.75 bounds`);
+      if (price < 0.10 || price > 0.85) {
+        console.log(`🚫 Rejected ${h.market}: price ${price} outside bounds`);
         return false;
       }
       const edge = h.edge || 0;
@@ -370,19 +503,19 @@ CRITICAL: ONLY trade CRYPTO markets ending in ≤5 MINUTES. Use EXACT market que
 
     if (preFilterCount !== parsed.hypos.length) {
       console.log(`🔍 Validated: ${parsed.hypos.length}/${preFilterCount} trades passed filters`);
-      parsed.log += ` | Filtered: ${preFilterCount - parsed.hypos.length} rejected (price/edge bounds)`;
+      parsed.log += ` | Filtered: ${preFilterCount - parsed.hypos.length} rejected`;
     }
 
-    // Server-side Kelly sizing enforcement (AI often ignores variable sizing)
+    // Server-side Kelly sizing enforcement (reduced from previous aggressive levels)
     for (const h of parsed.hypos) {
       const edge = h.edge || 0;
       let kellyFraction: number;
-      if (edge >= 0.20) {
-        kellyFraction = 0.15;
-      } else if (edge >= 0.12) {
-        kellyFraction = 0.10;
+      if (edge >= 0.25) {
+        kellyFraction = 0.12;
+      } else if (edge >= 0.15) {
+        kellyFraction = 0.07;
       } else {
-        kellyFraction = 0.05;
+        kellyFraction = 0.03;
       }
       const kellySize = Math.round(bankroll * kellyFraction * 100) / 100;
       const cappedSize = liveTrading ? Math.min(kellySize, 2.70) : kellySize;
@@ -418,7 +551,6 @@ CRITICAL: ONLY trade CRYPTO markets ending in ≤5 MINUTES. Use EXACT market que
         const tradeResult = await executeTrade(supabaseUrl, supabaseKey, hypo, marketsMap);
         tradeResults.push({ market: hypo.market, ...tradeResult });
 
-        // Save bet to database with execution status
         const marketMeta = marketsMap[hypo.market] || {};
         const betData = {
           cycle: parsed.cycle,
@@ -435,9 +567,7 @@ CRITICAL: ONLY trade CRYPTO markets ending in ≤5 MINUTES. Use EXACT market que
         };
 
         const { error: insertErr } = await sb.from("bets").insert(betData);
-        if (insertErr) {
-          console.error(`Failed to save bet for ${hypo.market}:`, insertErr);
-        }
+        if (insertErr) console.error(`Failed to save bet for ${hypo.market}:`, insertErr);
       }
 
       const filled = tradeResults.filter((t) => t.status === "filled").length;
