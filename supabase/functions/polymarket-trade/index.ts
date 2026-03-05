@@ -438,6 +438,48 @@ async function signAndSubmitOrder(
   }
 }
 
+// ── Cancel Order via L2 Auth ──
+async function cancelOrder(
+  apiKey: string,
+  secret: string,
+  passphrase: string,
+  orderId: string,
+  walletAddress?: string,
+): Promise<any> {
+  const ts = Math.floor(Date.now() / 1000);
+  const body = JSON.stringify({ orderID: orderId });
+  const headers = await getL2Headers(apiKey, secret, passphrase, ts, "DELETE", "/order", body, walletAddress);
+  const res = await fetch(`${CLOB_HOST}/order`, {
+    method: "DELETE",
+    headers: { ...headers, "Content-Type": "application/json" },
+    body,
+  });
+  const text = await res.text();
+  let data;
+  try { data = JSON.parse(text); } catch { data = { raw: text }; }
+  console.log(`Cancel order ${orderId}: [${res.status}] ${text.substring(0, 200)}`);
+  return { ok: res.ok, status: res.status, data };
+}
+
+async function cancelAllOrders(
+  apiKey: string,
+  secret: string,
+  passphrase: string,
+  walletAddress?: string,
+): Promise<any> {
+  const ts = Math.floor(Date.now() / 1000);
+  const headers = await getL2Headers(apiKey, secret, passphrase, ts, "DELETE", "/cancel-all", undefined, walletAddress);
+  const res = await fetch(`${CLOB_HOST}/cancel-all`, {
+    method: "DELETE",
+    headers: { ...headers, "Content-Type": "application/json" },
+  });
+  const text = await res.text();
+  let data;
+  try { data = JSON.parse(text); } catch { data = { raw: text }; }
+  console.log(`Cancel all orders: [${res.status}] ${text.substring(0, 200)}`);
+  return { ok: res.ok, status: res.status, data };
+}
+
 // ── L2-authenticated API calls ──
 async function getOpenOrders(apiKey: string, secret: string, passphrase: string, walletAddress?: string): Promise<any> {
   const ts = Math.floor(Date.now() / 1000);
