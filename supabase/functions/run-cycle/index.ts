@@ -56,53 +56,26 @@ async function fetchPolymarket(): Promise<{ text: string; marketsMap: Record<str
       return `${m.question} | conditionId: ${m.conditionId || "?"} | price: ${m.outcomePrices} | vol: $${Math.round(m.volumeNum || 0)} | liq: $${Math.round(m.liquidityNum || 0)} | ENDS IN: ${minsLeft} min`;
     };
 
-    // Categorize markets
-    const urgent = allMarkets.filter((m) => {
+    // Filter to ONLY markets ending in ≤5 minutes
+    const fiveMinMs = 5 * 60 * 1000;
+    const eligible = allMarkets.filter((m) => {
       const end = m.endDate || m.end_date_iso;
-      return end && new Date(end).getTime() - now.getTime() < 10 * 60 * 1000;
-    });
-    const nearTerm = allMarkets.filter((m) => {
-      const end = m.endDate || m.end_date_iso;
-      const diff = end ? new Date(end).getTime() - now.getTime() : Infinity;
-      return diff >= 10 * 60 * 1000 && diff < 60 * 60 * 1000;
-    });
-    const medium = allMarkets.filter((m) => {
-      const end = m.endDate || m.end_date_iso;
-      const diff = end ? new Date(end).getTime() - now.getTime() : Infinity;
-      return diff >= 60 * 60 * 1000 && diff < 4 * 60 * 60 * 1000;
-    });
-    const longer = allMarkets.filter((m) => {
-      const end = m.endDate || m.end_date_iso;
-      const diff = end ? new Date(end).getTime() - now.getTime() : Infinity;
-      return diff >= 4 * 60 * 60 * 1000;
+      if (!end) return false;
+      const diff = new Date(end).getTime() - now.getTime();
+      return diff > 0 && diff <= fiveMinMs;
     });
 
-    // Sort by volume within each category
+    // Sort by volume
     const byVol = (a: any, b: any) => (b.volumeNum || 0) - (a.volumeNum || 0);
 
-    const sections = [
-      urgent.length
-        ? `⚡ ENDING <10 MIN (${urgent.length}):\n${urgent.sort(byVol).slice(0, 20).map(formatMarket).join("\n")}`
-        : "",
-      nearTerm.length
-        ? `🕐 ENDING 10-60 MIN (${nearTerm.length}):\n${nearTerm.sort(byVol).slice(0, 20).map(formatMarket).join("\n")}`
-        : "",
-      medium.length
-        ? `⏳ ENDING 1-4 HOURS (${medium.length}):\n${medium.sort(byVol).slice(0, 15).map(formatMarket).join("\n")}`
-        : "",
-      longer.sort(byVol).length
-        ? `📅 ENDING 4-24+ HOURS (${longer.length}):\n${longer.sort(byVol).slice(0, 10).map(formatMarket).join("\n")}`
-        : "",
-    ]
-      .filter(Boolean)
-      .join("\n\n");
+    const section = eligible.length
+      ? `⚡ ENDING ≤5 MIN (${eligible.length}):\n${eligible.sort(byVol).slice(0, 30).map(formatMarket).join("\n")}`
+      : "No markets ending in ≤5 minutes found.";
 
-    console.log(
-      `📊 Scanned ${allMarkets.length} unique markets (${urgent.length} urgent, ${nearTerm.length} near, ${medium.length} medium, ${longer.length} longer)`,
-    );
+    console.log(`📊 Scanned ${allMarkets.length} unique markets → ${eligible.length} ending in ≤5 min`);
 
     return {
-      text: `POLYMARKET ALL CRYPTO MARKETS (${allMarkets.length} total):\n${sections || "No active markets found."}`,
+      text: `POLYMARKET CRYPTO MARKETS ENDING ≤5 MIN (${eligible.length} total):\n${section}`,
       marketsMap,
     };
   } catch (e) {
