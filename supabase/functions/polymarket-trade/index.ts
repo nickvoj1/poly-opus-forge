@@ -324,9 +324,12 @@ async function signAndSubmitOrder(
     // Round price to tick
     const tickedPrice = Math.round(price / tickSize) * tickSize;
     const finalPrice = Math.max(tickSize, Math.min(1 - tickSize, tickedPrice));
+    // Round size to ensure clean maker/taker amounts (max 2 decimal places for maker, 4 for taker)
+    // USDC amounts = size * 1e6, so size must produce clean integer USDC micros
+    const roundedSize = Math.floor(size * 100) / 100; // Round down to 2 decimal places
     const tradeSide = side === "BUY" ? ClobSide.BUY : ClobSide.SELL;
 
-    console.log(`Signing order: ${side} $${size} @ $${finalPrice} (tick=${tickSize}, fee=${feeRateBps}, negRisk=${negRisk})`);
+    console.log(`Signing order: ${side} $${roundedSize} @ $${finalPrice} (tick=${tickSize}, fee=${feeRateBps}, negRisk=${negRisk})`);
 
     // Strategy A: Try using SDK's createAndPostOrder directly (handles serialization correctly)
     try {
