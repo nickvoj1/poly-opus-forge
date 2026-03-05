@@ -712,6 +712,18 @@ serve(async (req) => {
         if (!POLY_API_KEY || !POLY_SECRET || !POLY_PASSPHRASE) return json({ error: "API creds missing" }, 400);
         return json(await getTradeHistory(POLY_API_KEY, POLY_SECRET, POLY_PASSPHRASE, clobAuthAddress));
 
+      case "cancel-order": {
+        if (!POLY_API_KEY || !POLY_SECRET || !POLY_PASSPHRASE) return json({ error: "API creds missing" }, 400);
+        const { orderId } = params;
+        if (!orderId) return json({ error: "Missing orderId" }, 400);
+        return json(await cancelOrder(POLY_API_KEY, POLY_SECRET, POLY_PASSPHRASE, orderId, clobAuthAddress));
+      }
+
+      case "cancel-all-orders": {
+        if (!POLY_API_KEY || !POLY_SECRET || !POLY_PASSPHRASE) return json({ error: "API creds missing" }, 400);
+        return json(await cancelAllOrders(POLY_API_KEY, POLY_SECRET, POLY_PASSPHRASE, clobAuthAddress));
+      }
+
       case "sign-order":
       case "place-trade": {
         if (!POLY_WALLET_KEY) return json({ error: "Wallet private key not configured" }, 400);
