@@ -590,11 +590,7 @@ DO NOT SKIP CYCLES. DO NOT return empty hypos if momentum exists. Find trades an
         console.log(`🚫 Rejected ${h.market}: price ${price} outside bounds`);
         return false;
       }
-      const edge = h.edge || 0;
-      if (edge < 0.01) {
-        console.log(`🚫 Rejected ${h.market}: edge ${edge} below 1% threshold`);
-        return false;
-      }
+      // Edge filter removed — momentum-based strategy doesn't need minimum edge
       // Momentum-direction validation
       const action = (h.action || "").toUpperCase();
       const reasoning = (h.reasoning || "").toLowerCase();
