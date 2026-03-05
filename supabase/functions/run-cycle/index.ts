@@ -296,27 +296,55 @@ ${systemPrompt}`;
             content: `You are an aggressive quantitative trading engine for Polymarket. You MUST respond with valid JSON only. No markdown, no code blocks.
 
 KELLY CRITERION STRATEGY (Target: 250% daily return):
-1. EDGE DETECTION: Calculate TRUE probability using BTC momentum, news sentiment, whale flows, volume patterns.
-   - Edge = TRUE_prob - market_price. Trade when edge > 8% (0.08). Be AGGRESSIVE - find edges!
-   - BTC 24h change is primary signal. Negative → SELL/NO, Positive → BUY/YES.
-   - Use time decay: markets ending in <10 min with mispriced odds have HUGE edge.
 
-2. KELLY SIZING: f* = (p*b - q) / b where p=win_prob, q=1-p, b=odds.
-   - Use AGGRESSIVE Kelly: bet 15% of bankroll per trade (f* capped at 15%).
-   - Live mode: max $2.70 per trade.
+1. EDGE DETECTION:
+   - Edge = TRUE_prob - market_price. Minimum edge threshold: 8% (0.08).
+   - BTC 24h change is PRIMARY signal: Negative → bet DOWN/SELL, Positive → bet UP/BUY.
+   - Cross-asset correlation: If BTC is up, ETH/SOL/XRP likely follow. Do NOT bet against BTC trend unless you have specific divergence evidence.
+   - Time decay: markets ending <10 min with mispriced odds = highest edge.
+   - You MUST explain your reasoning for each trade in the "reasoning" field.
+
+2. KELLY SIZING (VARIABLE — NOT FLAT):
+   - f* = (p*b - q) / b where p=win_prob, q=1-p, b=payout odds.
+   - Size MUST vary by edge strength:
+     * Edge 8-12%: size = 5% of bankroll
+     * Edge 12-20%: size = 10% of bankroll
+     * Edge 20%+: size = 15% of bankroll (max)
+   - Live mode hard cap: $2.70 per trade. Sim mode: use % of bankroll.
+   - NEVER use flat sizing. Each trade size must reflect its calculated kelly_f.
 
 3. MARKET SELECTION:
-   - ONLY CRYPTO markets. Ignore ALL non-crypto markets (politics, sports, weather, etc.).
-   - ONLY markets ending SOON: <10 min is ideal, <60 min is acceptable. Do NOT trade markets ending in hours.
+   - ONLY CRYPTO markets. Ignore ALL non-crypto (politics, sports, weather, etc.).
+   - ONLY markets ending SOON: <10 min ideal, <60 min acceptable. Do NOT trade markets ending in hours.
    - ONLY high-volume markets (volume > $10,000 or liquidity > $5,000).
-   - Parse "outcomePrices" as "[YesPrice, NoPrice]". Trade the side priced 0.15-0.75.
-   - YOU MUST output at least 2-5 hypos. If edge is marginal (8-15%), still trade with smaller size. NEVER return 0 hypos if ANY crypto market is ending soon.
+   - STRICT PRICE BOUNDS: Only trade sides priced between 0.15 and 0.75. REJECT any trade outside this range.
+   - Parse "outcomePrices" as "[YesPrice, NoPrice]". Choose the side within 0.15-0.75.
+   - Output 2-5 hypos. If edge is marginal (8-12%), trade with smaller size.
 
-4. COMPOUNDING: Target 5+ trades per cycle. Roll winners into next cycle bankroll.
+4. ACTIONS:
+   - BUY = buy the YES token (betting market resolves YES/Up).
+   - SELL = buy the NO token (betting market resolves NO/Down).
+   - Be explicit: if you think a crypto will go DOWN, use action "SELL".
 
-5. OUTPUT each hypo with: "market" (exact question), "action" (BUY/SELL), "size" (dollar amount), "pnl" (0), "price" (entry price), "edge" (estimated edge), "kelly_f" (kelly fraction used).
+5. OUTPUT FORMAT (all fields required):
+   {"cycle":N, "bankroll":N, "sharpe":N, "mdd":N, "hypos":[...], "rules":["rule1","rule2"], "log":"summary"}
 
-CRITICAL: ONLY trade CRYPTO markets ending SOON (<60 min). Use EXACT market question in "market" field. Output format: {"cycle":N,"bankroll":N,"hypos":[...],"log":"..."}`,
+   Each hypo MUST include ALL of these fields:
+   - "market": exact market question string
+   - "action": "BUY" or "SELL"
+   - "size": dollar amount (variable based on edge, NOT flat)
+   - "pnl": 0
+   - "price": entry price (must be 0.15-0.75)
+   - "edge": calculated edge as decimal (e.g. 0.15)
+   - "kelly_f": actual kelly fraction used (e.g. 0.05, 0.10, 0.15)
+   - "reasoning": 1-2 sentence explanation of WHY this trade has edge
+
+6. SHARPE & MDD:
+   - "sharpe": estimate rolling Sharpe ratio from recent cycles. If cycle 1, estimate from expected edge.
+   - "mdd": max drawdown % from peak bankroll. If cycle 1, set to 0.
+   - "rules": list 2-4 key rules/observations driving this cycle's decisions.
+
+CRITICAL: ONLY trade CRYPTO markets ending SOON (<60 min). Use EXACT market question in "market" field. Variable sizing is MANDATORY.`,
           },
           { role: "user", content: userMessage },
         ],
@@ -359,9 +387,37 @@ CRITICAL: ONLY trade CRYPTO markets ending SOON (<60 min). Use EXACT market ques
     parsed.cycle = parsed.cycle || cycle;
     parsed.bankroll = parsed.bankroll || bankroll;
     parsed.hypos = parsed.hypos || [];
+    parsed.sharpe = parsed.sharpe ?? 0;
+    parsed.mdd = parsed.mdd ?? 0;
+    parsed.rules = parsed.rules || [];
     parsed.log = parsed.log || "Cycle complete";
 
-    console.log(`🤖 AI returned ${parsed.hypos.length} trade ideas`);
+    // Server-side validation: filter out bad trades
+    const preFilterCount = parsed.hypos.length;
+    parsed.hypos = parsed.hypos.filter((h: any) => {
+      const price = h.price || 0;
+      if (price < 0.15 || price > 0.75) {
+        console.log(`🚫 Rejected ${h.market}: price ${price} outside 0.15-0.75 bounds`);
+        return false;
+      }
+      const edge = h.edge || 0;
+      if (edge < 0.08) {
+        console.log(`🚫 Rejected ${h.market}: edge ${edge} below 8% threshold`);
+        return false;
+      }
+      if (!h.market || typeof h.market !== "string") {
+        console.log(`🚫 Rejected trade: missing market name`);
+        return false;
+      }
+      return true;
+    });
+
+    if (preFilterCount !== parsed.hypos.length) {
+      console.log(`🔍 Validated: ${parsed.hypos.length}/${preFilterCount} trades passed filters`);
+      parsed.log += ` | Filtered: ${preFilterCount - parsed.hypos.length} rejected (price/edge bounds)`;
+    }
+
+    console.log(`🤖 AI returned ${parsed.hypos.length} valid trade ideas`);
 
     // Enrich hypos with token IDs from market data
     for (const h of parsed.hypos) {
