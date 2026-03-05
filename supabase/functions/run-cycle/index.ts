@@ -673,7 +673,6 @@ CRITICAL RULES:
     }
 
     // Execute trades and save results
-    const sb = createClient(supabaseUrl, supabaseKey);
     const tradeResults: any[] = [];
 
     if (liveTrading && parsed.hypos.length > 0) {
