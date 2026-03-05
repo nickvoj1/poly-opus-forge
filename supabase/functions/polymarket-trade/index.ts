@@ -43,21 +43,59 @@ async function getL2Headers(
 }
 
 // ── Fetch negRisk from Gamma API (not geoblocked) ──
-async function fetchNegRiskFromGamma(tokenId: string): Promise<boolean | null> {
+async function fetchNegRiskFromGamma(tokenId: string, marketName?: string): Promise<boolean | null> {
   try {
+    // Try clob_token_ids first
     const res = await fetch(`https://gamma-api.polymarket.com/markets?clob_token_ids=${tokenId}&closed=false`);
-    if (!res.ok) return null;
-    const markets = await res.json();
-    if (markets.length > 0) {
-      const neg = markets[0].neg_risk;
-      console.log(`Gamma negRisk for token ${tokenId.substring(0, 12)}...: ${neg} (question: ${markets[0].question?.substring(0, 60)})`);
-      return neg === true || neg === "true";
+    if (res.ok) {
+      const markets = await res.json();
+      if (markets.length > 0) {
+        const neg = markets[0].neg_risk;
+        const question = markets[0].question || "";
+        console.log(`Gamma negRisk for token ${tokenId.substring(0, 12)}...: ${neg} (question: ${question.substring(0, 60)})`);
+        if (neg !== undefined && neg !== null) {
+          return neg === true || neg === "true";
+        }
+        // Gamma returned the market but neg_risk is undefined — check the question text
+        if (isCryptoUpDownMarket(question)) {
+          console.log(`Gamma neg_risk undefined but question matches crypto pattern → forcing negRisk=true`);
+          return true;
+        }
+      }
     }
-    // Try condition_id lookup
-    const res2 = await fetch(`https://gamma-api.polymarket.com/markets?active=true&limit=5`);
+
+    // Try searching by token_id without closed filter
+    const res2 = await fetch(`https://gamma-api.polymarket.com/markets?clob_token_ids=${tokenId}`);
+    if (res2.ok) {
+      const markets2 = await res2.json();
+      if (markets2.length > 0) {
+        const neg = markets2[0].neg_risk;
+        const question = markets2[0].question || "";
+        console.log(`Gamma (no filter) negRisk: ${neg} (question: ${question.substring(0, 60)})`);
+        if (neg !== undefined && neg !== null) {
+          return neg === true || neg === "true";
+        }
+        if (isCryptoUpDownMarket(question)) {
+          console.log(`Gamma neg_risk undefined but question matches crypto pattern → forcing negRisk=true`);
+          return true;
+        }
+      }
+    }
+
+    // If market name was provided and matches crypto pattern, force true
+    if (marketName && isCryptoUpDownMarket(marketName)) {
+      console.log(`Gamma lookup returned no neg_risk, but market name matches crypto pattern → forcing negRisk=true`);
+      return true;
+    }
+
     return null;
   } catch (e) {
     console.error("Gamma negRisk lookup error:", e);
+    // Even on error, if market name matches crypto pattern, force true
+    if (marketName && isCryptoUpDownMarket(marketName)) {
+      console.log(`Gamma lookup failed but market matches crypto pattern → forcing negRisk=true`);
+      return true;
+    }
     return null;
   }
 }
@@ -67,12 +105,18 @@ function isCryptoUpDownMarket(marketName?: string): boolean {
   if (!marketName) return false;
   const lower = marketName.toLowerCase();
   const cryptoPatterns = [
-    /\b(btc|bitcoin|eth|ethereum|sol|solana|xrp|doge|bnb|ada|avax|matic|link|dot)\b/,
+    /\b(btc|bitcoin|eth|ethereum|sol|solana|xrp|doge|dogecoin|bnb|ada|cardano|avax|avalanche|matic|polygon|link|chainlink|dot|polkadot|ltc|litecoin|uni|uniswap|aave|shib|pepe|sui|apt|aptos|arb|arbitrum|op|optimism)\b/,
     /\b(crypto|coin|token)\b/,
   ];
-  const upDownPatterns = [/above|below|over|under|hit|reach|price|by .*(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/i];
+  const upDownPatterns = [
+    /up\s+or\s+down/i,
+    /above|below|over|under|hit|reach|price/i,
+    /by .*(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/i,
+    /\d+[:\s]*(am|pm)\s*(et|est|edt|utc|pt|pst|ct|cst)/i,
+  ];
   const isCrypto = cryptoPatterns.some(p => p.test(lower));
   const isUpDown = upDownPatterns.some(p => p.test(lower));
+  console.log(`isCryptoUpDownMarket("${marketName.substring(0, 50)}"): crypto=${isCrypto}, upDown=${isUpDown}`);
   return isCrypto && isUpDown;
 }
 
@@ -233,6 +277,7 @@ async function signAndSubmitOrder(
   price: number,
   _negRisk = false,
   storedCreds?: { apiKey: string; secret: string; passphrase: string },
+  marketName?: string,
 ): Promise<any> {
   if (!storedCreds) return { error: "API credentials required for local signing" };
 
@@ -257,11 +302,15 @@ async function signAndSubmitOrder(
     let feeRateBps = 0;
     let negRisk = _negRisk;
 
-    // 1. Try Gamma API first for negRisk (not geoblocked)
-    const gammaNegRisk = await fetchNegRiskFromGamma(tokenId);
+    // 1. Try Gamma API first for negRisk (not geoblocked) — also pass market name for pattern matching
+    const gammaNegRisk = await fetchNegRiskFromGamma(tokenId, marketName);
     if (gammaNegRisk !== null) {
       negRisk = gammaNegRisk;
       console.log(`negRisk from Gamma API: ${negRisk}`);
+    } else if (isCryptoUpDownMarket(marketName)) {
+      // Gamma returned null but market name matches crypto pattern
+      negRisk = true;
+      console.log(`negRisk forced true via market name pattern: "${marketName?.substring(0, 50)}"`);
     }
 
     // 2. Fetch tick size and fee rate via proxy, and CLOB negRisk as fallback
@@ -655,6 +704,7 @@ serve(async (req) => {
           price,
           resolvedNegRisk,
           storedCreds,
+          market,
         );
         return json(result, result.error ? 400 : 200);
       }
