@@ -527,6 +527,23 @@ async function redeemPositions(
           return { success: false, error: `Proxy: ${proxyErr.message} | EOA: ${eoaErr.message}` };
         }
       }
+    } else {
+      // Direct EOA wallet — call CTF contract directly
+      console.log(`🔄 Redeeming directly from EOA for condition ${conditionId.substring(0, 16)}...`);
+      const ctfContract = new ethers.Contract(CTF_ADDRESS, ctfInterface, wallet);
+      const tx = await ctfContract.redeemPositions(
+        USDC_E, PARENT_COLLECTION_ID, conditionId, INDEX_SETS, gasOverrides,
+      );
+      console.log(`📝 Redeem tx sent: ${tx.hash}`);
+      const receipt = await tx.wait();
+      console.log(`✅ Redeem confirmed: ${receipt.transactionHash} (gas: ${receipt.gasUsed.toString()})`);
+      return { success: true, txHash: receipt.transactionHash };
+    }
+  } catch (e) {
+    console.error("Redeem error:", e);
+    return { success: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}
 
 // ── Cancel Order via L2 Auth ──
 async function cancelOrder(
