@@ -370,7 +370,7 @@ async function signAndSubmitOrder(
         signatureType: signedOrder.signatureType,
         signature: signedOrder.signature,
       },
-      owner: funderAddress,
+      owner: storedCreds.apiKey,
       orderType: "FAK",
     };
 
