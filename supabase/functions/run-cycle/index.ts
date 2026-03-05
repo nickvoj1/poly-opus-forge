@@ -373,6 +373,26 @@ CRITICAL: ONLY trade CRYPTO markets ending in ≤5 MINUTES. Use EXACT market que
       parsed.log += ` | Filtered: ${preFilterCount - parsed.hypos.length} rejected (price/edge bounds)`;
     }
 
+    // Server-side Kelly sizing enforcement (AI often ignores variable sizing)
+    for (const h of parsed.hypos) {
+      const edge = h.edge || 0;
+      let kellyFraction: number;
+      if (edge >= 0.20) {
+        kellyFraction = 0.15;
+      } else if (edge >= 0.12) {
+        kellyFraction = 0.10;
+      } else {
+        kellyFraction = 0.05;
+      }
+      const kellySize = Math.round(bankroll * kellyFraction * 100) / 100;
+      const cappedSize = liveTrading ? Math.min(kellySize, 2.70) : kellySize;
+      if (cappedSize !== h.size) {
+        console.log(`📐 Kelly override: ${h.market} edge=${edge} → f=${kellyFraction} → $${h.size} → $${cappedSize}`);
+      }
+      h.kelly_f = kellyFraction;
+      h.size = cappedSize;
+    }
+
     console.log(`🤖 AI returned ${parsed.hypos.length} valid trade ideas`);
 
     // Enrich hypos with token IDs from market data
