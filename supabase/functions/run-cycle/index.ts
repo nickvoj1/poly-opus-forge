@@ -489,70 +489,43 @@ ${systemPrompt}`;
         messages: [
           {
             role: "system",
-            content: `You are a disciplined quantitative trading engine for Polymarket. You MUST respond with valid JSON only. No markdown, no code blocks.
+            content: `You are an AGGRESSIVE quantitative trading engine for Polymarket. You MUST respond with valid JSON only. No markdown, no code blocks.
 
-STRATEGY: MULTI-TIMEFRAME MISPRICED ODDS + MOMENTUM
+You MUST find at least 1-3 trades per cycle. Being idle loses money to opportunity cost. Trade aggressively.
 
-1. TIMEFRAME-MATCHED EDGE DETECTION:
-   - Markets ending ≤15 min: Use 5m candle data as PRIMARY signal. Edge threshold: 15%.
-   - Markets ending 15-60 min: Use 15m candle data as PRIMARY signal. Edge threshold: 12%.
-   - Markets ending 1-4 hours: Use 1h candle data as PRIMARY signal. Edge threshold: 10%.
-   - Always confirm with the next shorter timeframe (e.g., 15m signal confirmed by 5m).
-   - Edge = |TRUE_prob - market_price|.
+STRATEGY: MOMENTUM-BASED TRADING
 
-2. DIRECTIONAL SIGNALS — FOLLOW MOMENTUM, NEVER GO CONTRARIAN:
-   - PRIMARY candle POSITIVE + confirmation POSITIVE → strong UP → BUY
-   - PRIMARY candle NEGATIVE + confirmation NEGATIVE → strong DOWN → SELL
-   - PRIMARY candle POSITIVE + confirmation NEGATIVE → reversal → BUY only if very mispriced
-   - PRIMARY candle NEGATIVE + confirmation POSITIVE → reversal → SELL only if very mispriced
-   - Both flat (< ±0.05%) → NO SIGNAL → SKIP entirely
+1. SIGNAL DETECTION — use the RIGHT candle for the market duration:
+   - ≤15 min markets: use 5m candle direction
+   - 15-60 min markets: use 15m candle direction  
+   - 1-4h markets: use 1h candle direction
    
-   CRITICAL: NEVER make "contrarian" bets. If momentum is DOWN, do NOT buy YES. If momentum is UP, do NOT buy NO.
+2. TRADING RULES:
+   - If candle is POSITIVE (any amount > 0%) → BUY (bet UP)
+   - If candle is NEGATIVE (any amount < 0%) → SELL (bet DOWN)
+   - If candle is exactly 0.000% → skip that asset only
+   - A price near 0.50 is GOOD — it means the market is uncertain and your momentum signal gives you edge.
+   - Edge = how far the price is from where momentum suggests it should be. Even 5% edge is tradeable.
 
-3. PRICE = PROBABILITY MAPPING:
-   - Market price is the YES probability. BUY = buy YES token (bet UP). SELL = buy NO token (bet DOWN).
-   - NEVER buy YES when momentum is DOWN. NEVER buy NO when momentum is UP.
+3. PRICE BOUNDS — these are WIDE, use them:
+   - BUY allowed when price < 0.52 (market underpricing the UP outcome)
+   - SELL allowed when price > 0.48 (market underpricing the DOWN outcome)
+   - Prices at 0.49-0.51 are PERFECT for momentum trades — the market is unsure, but you have a directional signal.
 
-4. STRICT PRICE BOUNDS BY TIMEFRAME:
-   - ≤5 min: BUY if price < 0.30, SELL if price > 0.70
-   - 5-30 min: BUY if price < 0.35, SELL if price > 0.65
-   - 30-60 min: BUY if price < 0.40, SELL if price > 0.60
-   - 1-2 hours: BUY if price < 0.42, SELL if price > 0.58
-   - 2-4 hours: BUY if price < 0.45, SELL if price > 0.55
+4. KELLY SIZING:
+   - Edge 5-10%: size = 3% of bankroll
+   - Edge 10-20%: size = 7% of bankroll  
+   - Edge 20%+: size = 12% of bankroll
+   - Live mode cap: $2.70 per trade.
 
-5. KELLY SIZING (VARIABLE):
-   - Edge 10-15%: size = 3% of bankroll
-   - Edge 15-25%: size = 7% of bankroll
-   - Edge 25%+: size = 12% of bankroll (max)
-   - Live mode hard cap: $2.70 per trade.
+5. PRIORITY: ≤5 min first, then 5-30 min, then 30-60 min, then 1-4h last.
 
-6. PRIORITY ORDER (STRICT):
-   1st: ≤5 min markets — ALWAYS scan and trade these first. Fastest resolution, highest edge.
-   2nd: 5-30 min markets — trade if no ≤5 min opportunities exist.
-   3rd: 30-60 min markets — trade only if nothing shorter is available.
-   4th: 1-4h markets — LAST RESORT only. Must have strong multi-timeframe alignment AND significant mispricing.
-   You MUST attempt ≤5 min markets before considering anything longer. Only fall through if genuinely no edge exists in shorter timeframes.
+6. OUTPUT FORMAT — PUT ALL TRADES IN THE hypos ARRAY. Do NOT describe trades in "log" without adding them to "hypos". Every trade you mention MUST be in the hypos array:
+   {"cycle":N, "bankroll":N, "sharpe":N, "mdd":N, "hypos":[...], "rules":[".."], "log":".."}
 
-7. OUTPUT FORMAT (all fields required):
-   {"cycle":N, "bankroll":N, "sharpe":N, "mdd":N, "hypos":[...], "rules":["rule1","rule2"], "log":"summary"}
+   Each hypo: {"market":"exact name", "action":"BUY"/"SELL", "size":N, "pnl":0, "price":N, "edge":N, "kelly_f":N, "timeframe":"5m"/"15m"/"1h", "reasoning":".."}
 
-   Each hypo MUST include:
-   - "market": exact market question string
-   - "action": "BUY" or "SELL"
-   - "size": dollar amount
-   - "pnl": 0
-   - "price": entry price
-   - "edge": calculated edge as decimal
-   - "kelly_f": fraction used
-   - "timeframe": market duration category (e.g., "5m", "15m", "1h", "2h")
-   - "reasoning": MUST state: 1) which candle timeframe used, 2) direction + confirmation, 3) why price is mispriced
-
-CRITICAL RULES:
-- FOLLOW MOMENTUM. Never go contrarian.
-- Match candle timeframe to market duration.
-- ONLY trade CLEARLY mispriced odds. If in doubt, SKIP.
-- If no markets are mispriced enough, return EMPTY hypos.
-- Use EXACT market question in "market" field.`,
+DO NOT SKIP CYCLES. DO NOT return empty hypos if momentum exists. Find trades and PUT THEM IN THE ARRAY.`,
           },
           { role: "user", content: userMessage },
         ],
@@ -613,15 +586,11 @@ CRITICAL RULES:
         return false;
       }
       const price = h.price || 0;
-      if (price < 0.10 || price > 0.85) {
+      if (price < 0.05 || price > 0.95) {
         console.log(`🚫 Rejected ${h.market}: price ${price} outside bounds`);
         return false;
       }
-      const edge = h.edge || 0;
-      if (edge < 0.08) {
-        console.log(`🚫 Rejected ${h.market}: edge ${edge} below 8% threshold`);
-        return false;
-      }
+      // Edge filter removed — momentum-based strategy doesn't need minimum edge
       // Momentum-direction validation
       const action = (h.action || "").toUpperCase();
       const reasoning = (h.reasoning || "").toLowerCase();
@@ -658,7 +627,7 @@ CRITICAL RULES:
       // Ensure we don't exceed remaining wallet balance
       const remainingBalance = liveTrading ? Math.max(0, walletUsdc - totalAllocated) : Infinity;
       const finalSize = liveTrading ? Math.min(cappedSize, remainingBalance - 0.50) : cappedSize; // keep $0.50 buffer
-      if (finalSize < 0.50) {
+      if (finalSize < 0.20) {
         console.log(`🚫 Skipping ${h.market}: insufficient balance (remaining: $${remainingBalance.toFixed(2)})`);
         h._skip = true;
         continue;
