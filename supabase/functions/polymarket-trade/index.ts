@@ -447,7 +447,30 @@ async function redeemPositions(
   try {
     const { ethers } = await import("https://esm.sh/ethers@5.7.2");
     const pk = walletPrivateKey.startsWith("0x") ? walletPrivateKey : `0x${walletPrivateKey}`;
-    const wallet = new ethers.Wallet(pk, new ethers.providers.JsonRpcProvider("https://polygon-rpc.com"));
+    
+    // Try multiple RPC providers for reliability
+    const rpcUrls = [
+      "https://polygon-bor-rpc.publicnode.com",
+      "https://rpc.ankr.com/polygon",
+      "https://polygon.llamarpc.com",
+      "https://polygon-rpc.com",
+    ];
+    
+    let provider: any = null;
+    for (const rpcUrl of rpcUrls) {
+      try {
+        const p = new ethers.providers.JsonRpcProvider(rpcUrl);
+        await p.getBlockNumber(); // test connection
+        provider = p;
+        console.log(`✅ Connected to RPC: ${rpcUrl}`);
+        break;
+      } catch {
+        console.log(`⚠ RPC failed: ${rpcUrl}`);
+      }
+    }
+    if (!provider) throw new Error("All Polygon RPC providers failed");
+    
+    const wallet = new ethers.Wallet(pk, provider);
 
     const CTF_ADDRESS = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045";
     const USDC_E = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174";
