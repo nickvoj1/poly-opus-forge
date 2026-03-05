@@ -292,10 +292,9 @@ async function signAndSubmitOrder(
     if (gammaNegRisk !== null) {
       negRisk = gammaNegRisk;
       console.log(`negRisk from Gamma API: ${negRisk}`);
-    } else if (isCryptoUpDownMarket(marketName)) {
-      // Gamma returned null but market name matches crypto pattern
-      negRisk = true;
-      console.log(`negRisk forced true via market name pattern: "${marketName?.substring(0, 50)}"`);
+    } else {
+      // Gamma returned null (market not found) — default to false
+      console.log(`Gamma returned null, defaulting negRisk=false`);
     }
 
     // 2. Fetch tick size and fee rate via proxy, and CLOB negRisk as fallback
