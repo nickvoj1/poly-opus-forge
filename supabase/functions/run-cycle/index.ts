@@ -289,9 +289,30 @@ async function managePositions(
       const unrealizedPnl = (curPrice - avgPrice) * size;
       const pnlPct = avgPrice > 0 ? (curPrice - avgPrice) / avgPrice : 0;
 
-      // Check time to expiry
+      // Check time to expiry — handle both ISO datetime and date-only formats
       const endDate = pos.endDate || pos.end_date;
-      const msToExpiry = endDate ? new Date(endDate + "T23:59:59Z").getTime() - now : Infinity;
+      let msToExpiry = Infinity;
+      if (endDate) {
+        // If it already has a time component (T or includes :), parse directly
+        const dateStr = endDate.includes("T") || endDate.includes(":") ? endDate : `${endDate}T23:59:59Z`;
+        msToExpiry = new Date(dateStr).getTime() - now;
+      }
+      // Also check market title for time hints (e.g. "7:55AM-8:00AM ET")
+      const timeMatch = title.match(/(\d{1,2}):(\d{2})(AM|PM)\s*(?:-\s*(\d{1,2}):(\d{2})(AM|PM))?\s*ET/i);
+      if (timeMatch) {
+        let hours = parseInt(timeMatch[4] || timeMatch[1]); // Use end time if range
+        const mins = parseInt(timeMatch[5] || timeMatch[2]);
+        const ampm = (timeMatch[6] || timeMatch[3]).toUpperCase();
+        if (ampm === "PM" && hours < 12) hours += 12;
+        if (ampm === "AM" && hours === 12) hours = 0;
+        const today = new Date();
+        const etOffset = -5; // ET = UTC-5 (EST)
+        const expiryUtc = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate(), hours - etOffset, mins));
+        const titleMsToExpiry = expiryUtc.getTime() - now;
+        if (titleMsToExpiry > 0 && titleMsToExpiry < msToExpiry) {
+          msToExpiry = titleMsToExpiry;
+        }
+      }
       const minsToExpiry = msToExpiry / 60000;
 
       let shouldClose = false;
@@ -419,13 +440,25 @@ serve(async (req) => {
 
     const effectiveBankroll = liveTrading ? walletUsdc : bankroll;
 
+    // Fetch existing pending bets to avoid duplicates
+    const sb = createClient(supabaseUrl, supabaseKey);
+    const { data: pendingBets } = await sb.from("bets").select("market").eq("status", "pending").eq("is_live", liveTrading);
+    const existingMarkets = new Set((pendingBets || []).map((b: any) => b.market));
+    if (existingMarkets.size > 0) {
+      console.log(`📋 Existing pending bets: ${existingMarkets.size} markets (will skip duplicates)`);
+    }
+
     const [polyResult, cryptoData] = await Promise.all([fetchPolymarket(), fetchCryptoPrices()]);
 
     const polyData = polyResult.text;
     const marketsMap = polyResult.marketsMap;
 
+    const existingMarketsStr = existingMarkets.size > 0
+      ? `\nALREADY HAVE POSITIONS IN (DO NOT TRADE THESE): ${[...existingMarkets].join(", ")}`
+      : "";
+
     const userMessage = `Cycle ${cycle}. Bankroll: $${effectiveBankroll.toFixed(2)}.${liveTrading ? ` WALLET BALANCE: $${walletUsdc.toFixed(2)} USDC. Do NOT place trades exceeding this balance.` : ""}
-Trade markets ending ≤60 min. Use 5-MINUTE candle data for direction, NOT just 24h trend.
+Trade markets ending ≤60 min. Use 5-MINUTE candle data for direction, NOT just 24h trend.${existingMarketsStr}
 
 LIVE DATA:
 ${polyData}
@@ -455,34 +488,37 @@ STRATEGY: MISPRICED ODDS + SHORT-TERM MOMENTUM
    - "prev5m" shows the candle before that — use for momentum confirmation.
    - 24h change is SECONDARY — only use for markets ending 30-60 min.
    - Edge = |TRUE_prob - market_price|. Minimum edge: 15% (0.15) for ≤5min markets, 10% for longer.
-   - CRITICAL: 5-min binary markets are NOISY. Only trade when odds are CLEARLY mispriced.
 
-2. DIRECTIONAL SIGNALS (5-minute candles):
-   - 5m change POSITIVE + prev5m POSITIVE → strong UP momentum → BUY if price < 0.30
-   - 5m change NEGATIVE + prev5m NEGATIVE → strong DOWN momentum → SELL if price > 0.70
-   - 5m change MIXED (one up, one down) → CHOPPY → only trade if price is extremely mispriced (<0.20 or >0.80 mapped to 0.20)
-   - If 5m candle is flat (< ±0.05%) → NO CLEAR SIGNAL → skip or trade only extreme mispricing
+2. DIRECTIONAL SIGNALS — FOLLOW MOMENTUM, NEVER GO CONTRARIAN:
+   - 5m POSITIVE + prev5m POSITIVE → strong UP → BUY (price must be < 0.30)
+   - 5m NEGATIVE + prev5m NEGATIVE → strong DOWN → SELL (price must be > 0.70)
+   - 5m POSITIVE + prev5m NEGATIVE → reversal UP → BUY only if price < 0.25 (weak signal)
+   - 5m NEGATIVE + prev5m POSITIVE → reversal DOWN → SELL only if price > 0.75 (weak signal)
+   - Both flat (< ±0.05%) → NO SIGNAL → SKIP entirely
+   
+   CRITICAL: NEVER make "contrarian" bets. If momentum is DOWN, do NOT buy YES. If momentum is UP, do NOT buy NO.
+   The 5m candle tells you WHERE price is going. Trust it. Do not second-guess it.
 
-3. DIVERSIFICATION (MANDATORY):
-   - You MUST mix BUY and SELL trades. Do NOT bet all in one direction.
-   - If placing 4 trades, at least 1 must be in the opposite direction.
-   - Different assets can have different short-term momentum — trade them independently.
+3. PRICE = PROBABILITY MAPPING:
+   - Market price is the YES probability. If price = 0.20, market says 20% chance of UP.
+   - BUY = buy YES token. You profit if outcome is YES (UP). Buy when momentum is UP and price < 0.30.
+   - SELL = buy NO token. You profit if outcome is NO (DOWN). Sell when momentum is DOWN and price > 0.70.
+   - NEVER buy YES when momentum is DOWN. NEVER buy NO when momentum is UP.
 
 4. STRICT PRICE BOUNDS — ONLY TRADE MISPRICED ODDS:
-   - For ≤5 min markets: ONLY trade if price < 0.30 (BUY) or price > 0.70 (SELL as mapped)
-   - For 5-30 min markets: ONLY trade if price < 0.35 (BUY) or price > 0.65 (SELL)
-   - For 30-60 min markets: standard 0.15-0.75 range acceptable
-   - These bounds ensure you only enter when odds are genuinely mispriced.
+   - For ≤5 min markets: ONLY BUY if price < 0.30, ONLY SELL if price > 0.70
+   - For 5-30 min markets: ONLY BUY if price < 0.35, ONLY SELL if price > 0.65
+   - For 30-60 min markets: BUY if price < 0.40, SELL if price > 0.60
 
 5. KELLY SIZING (VARIABLE):
-   - Edge 10-15%: size = 3% of bankroll (conservative)
+   - Edge 10-15%: size = 3% of bankroll
    - Edge 15-25%: size = 7% of bankroll
    - Edge 25%+: size = 12% of bankroll (max)
    - Live mode hard cap: $2.70 per trade.
 
 6. ACTIONS:
-   - BUY = buy YES token (bet UP/Yes). Use when crypto 5m momentum is UP and price is LOW.
-   - SELL = buy NO token (bet DOWN/No). Use when crypto 5m momentum is DOWN and price is HIGH.
+   - BUY = buy YES token (bet UP). ONLY when 5m momentum is UP and price is LOW.
+   - SELL = buy NO token (bet DOWN). ONLY when 5m momentum is DOWN and price is HIGH.
 
 7. OUTPUT FORMAT (all fields required):
    {"cycle":N, "bankroll":N, "sharpe":N, "mdd":N, "hypos":[...], "rules":["rule1","rule2"], "log":"summary"}
@@ -490,22 +526,16 @@ STRATEGY: MISPRICED ODDS + SHORT-TERM MOMENTUM
    Each hypo MUST include:
    - "market": exact market question string
    - "action": "BUY" or "SELL"
-   - "size": dollar amount (variable, NOT flat)
+   - "size": dollar amount
    - "pnl": 0
    - "price": entry price
    - "edge": calculated edge as decimal
    - "kelly_f": fraction used
-   - "reasoning": explain 5m candle signal + why price is mispriced
-
-8. SHARPE & MDD:
-   - "sharpe": estimated from recent performance
-   - "mdd": max drawdown %
-   - "rules": 2-4 observations
+   - "reasoning": MUST state: 1) 5m direction, 2) prev5m direction, 3) why price is mispriced vs momentum
 
 CRITICAL RULES:
-- Use 5-MINUTE candle momentum, NOT 24h trend, for direction on short markets.
+- FOLLOW MOMENTUM. Never go contrarian. UP momentum = BUY. DOWN momentum = SELL.
 - ONLY trade CLEARLY mispriced odds. If in doubt, SKIP.
-- DIVERSIFY: mix BUY and SELL. Never all same direction.
 - If no markets are mispriced enough, return EMPTY hypos. It's better to skip than lose.
 - Use EXACT market question in "market" field.`,
           },
@@ -555,9 +585,18 @@ CRITICAL RULES:
     parsed.rules = parsed.rules || [];
     parsed.log = parsed.log || "Cycle complete";
 
-    // Server-side validation: filter out bad trades
+    // Server-side validation: filter out bad trades and duplicates
     const preFilterCount = parsed.hypos.length;
     parsed.hypos = parsed.hypos.filter((h: any) => {
+      if (!h.market || typeof h.market !== "string") {
+        console.log(`🚫 Rejected trade: missing market name`);
+        return false;
+      }
+      // Dedup: skip if we already have a pending bet on this market
+      if (existingMarkets.has(h.market)) {
+        console.log(`🚫 Rejected ${h.market}: already have a pending position`);
+        return false;
+      }
       const price = h.price || 0;
       if (price < 0.10 || price > 0.85) {
         console.log(`🚫 Rejected ${h.market}: price ${price} outside bounds`);
@@ -568,8 +607,15 @@ CRITICAL RULES:
         console.log(`🚫 Rejected ${h.market}: edge ${edge} below 8% threshold`);
         return false;
       }
-      if (!h.market || typeof h.market !== "string") {
-        console.log(`🚫 Rejected trade: missing market name`);
+      // Momentum-direction validation
+      const action = (h.action || "").toUpperCase();
+      const reasoning = (h.reasoning || "").toLowerCase();
+      if (action === "BUY" && (reasoning.includes("negative momentum") || reasoning.includes("contrarian"))) {
+        console.log(`🚫 Rejected ${h.market}: BUY contradicts negative momentum`);
+        return false;
+      }
+      if (action === "SELL" && (reasoning.includes("positive momentum") || reasoning.includes("contrarian"))) {
+        console.log(`🚫 Rejected ${h.market}: SELL contradicts positive momentum`);
         return false;
       }
       return true;
@@ -627,7 +673,6 @@ CRITICAL RULES:
     }
 
     // Execute trades and save results
-    const sb = createClient(supabaseUrl, supabaseKey);
     const tradeResults: any[] = [];
 
     if (liveTrading && parsed.hypos.length > 0) {
