@@ -11,45 +11,21 @@ async function fetchPolymarket(): Promise<{ text: string; marketsMap: Record<str
   try {
     const now = new Date();
     const endMin = now.toISOString();
-    const soon10 = new Date(now.getTime() + 10 * 60 * 1000).toISOString();
-    const soon60 = new Date(now.getTime() + 60 * 60 * 1000).toISOString();
-    const soon4h = new Date(now.getTime() + 4 * 60 * 60 * 1000).toISOString();
-    const soon24h = new Date(now.getTime() + 24 * 60 * 60 * 1000).toISOString();
+    const soon5 = new Date(now.getTime() + 5 * 60 * 1000).toISOString();
 
-    // Fetch ALL crypto markets across multiple time horizons + categories
+    // Fetch ONLY markets ending in ≤5 minutes + crypto-specific searches (filtered later)
     const queries = [
-      // Urgent: ending <10 min
+      // Primary: ending ≤5 min
       fetch(
-        `https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=50&order=endDate&ascending=true&end_date_min=${endMin}&end_date_max=${soon10}`,
+        `https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=100&order=endDate&ascending=true&end_date_min=${endMin}&end_date_max=${soon5}`,
       ),
-      // Near: ending <1 hour
-      fetch(
-        `https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=50&order=endDate&ascending=true&end_date_min=${soon10}&end_date_max=${soon60}`,
-      ),
-      // Medium: ending 1-4 hours
-      fetch(
-        `https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=50&order=endDate&ascending=true&end_date_min=${soon60}&end_date_max=${soon4h}`,
-      ),
-      // Longer: ending 4-24 hours
-      fetch(
-        `https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=30&order=endDate&ascending=true&end_date_min=${soon4h}&end_date_max=${soon24h}`,
-      ),
-      // Top volume across all crypto
-      fetch(`https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=50&order=volume&ascending=false`),
-      // Top liquidity
-      fetch(
-        `https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=30&order=liquidityNum&ascending=false`,
-      ),
-      // Crypto-specific searches
-      fetch(
-        `https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=30&order=volume&ascending=false&tag=crypto`,
-      ),
+      // Crypto-specific searches (will be filtered to ≤5 min)
+      fetch(`https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=30&order=volume&ascending=false&tag=crypto`),
       fetch(`https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=20&query=Bitcoin`),
       fetch(`https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=20&query=Ethereum`),
       fetch(`https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=20&query=Solana`),
       fetch(`https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=15&query=XRP`),
       fetch(`https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=15&query=Dogecoin`),
-      fetch(`https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=15&query=crypto`),
     ];
 
     const responses = await Promise.all(queries);
