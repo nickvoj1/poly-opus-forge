@@ -289,9 +289,30 @@ async function managePositions(
       const unrealizedPnl = (curPrice - avgPrice) * size;
       const pnlPct = avgPrice > 0 ? (curPrice - avgPrice) / avgPrice : 0;
 
-      // Check time to expiry
+      // Check time to expiry — handle both ISO datetime and date-only formats
       const endDate = pos.endDate || pos.end_date;
-      const msToExpiry = endDate ? new Date(endDate + "T23:59:59Z").getTime() - now : Infinity;
+      let msToExpiry = Infinity;
+      if (endDate) {
+        // If it already has a time component (T or includes :), parse directly
+        const dateStr = endDate.includes("T") || endDate.includes(":") ? endDate : `${endDate}T23:59:59Z`;
+        msToExpiry = new Date(dateStr).getTime() - now;
+      }
+      // Also check market title for time hints (e.g. "7:55AM-8:00AM ET")
+      const timeMatch = title.match(/(\d{1,2}):(\d{2})(AM|PM)\s*(?:-\s*(\d{1,2}):(\d{2})(AM|PM))?\s*ET/i);
+      if (timeMatch) {
+        let hours = parseInt(timeMatch[4] || timeMatch[1]); // Use end time if range
+        const mins = parseInt(timeMatch[5] || timeMatch[2]);
+        const ampm = (timeMatch[6] || timeMatch[3]).toUpperCase();
+        if (ampm === "PM" && hours < 12) hours += 12;
+        if (ampm === "AM" && hours === 12) hours = 0;
+        const today = new Date();
+        const etOffset = -5; // ET = UTC-5 (EST)
+        const expiryUtc = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate(), hours - etOffset, mins));
+        const titleMsToExpiry = expiryUtc.getTime() - now;
+        if (titleMsToExpiry > 0 && titleMsToExpiry < msToExpiry) {
+          msToExpiry = titleMsToExpiry;
+        }
+      }
       const minsToExpiry = msToExpiry / 60000;
 
       let shouldClose = false;
