@@ -335,7 +335,7 @@ async function signAndSubmitOrder(
     try {
       console.log("Attempting SDK createAndPostOrder (direct)...");
       const sdkResult = await client.createAndPostOrder(
-        { tokenID: tokenId, price: finalPrice, size, side: tradeSide, feeRateBps },
+        { tokenID: tokenId, price: finalPrice, size: roundedSize, side: tradeSide, feeRateBps },
         { tickSize: `${tickSize}`, negRisk },
         OrderType.FAK,
       );
