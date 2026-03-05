@@ -352,35 +352,36 @@ async function signAndSubmitOrder(
 
     console.log("Signed order side:", signedOrder.side, typeof signedOrder.side, "| feeRateBps:", signedOrder.feeRateBps, "| signatureType:", signedOrder.signatureType);
 
-    // Convert to CLOB API format (matches SDK's orderToJson)
+    // Convert to CLOB API format (matches SDK's orderToJson — all numeric fields as strings)
     const sideStr = signedOrder.side === 0 || signedOrder.side === "BUY" ? "BUY" : "SELL";
     const orderPayload = {
-      deferExec: false,
       order: {
-        salt: parseInt(String(signedOrder.salt), 10),
+        salt: String(signedOrder.salt),
         maker: signedOrder.maker,
         signer: signedOrder.signer,
         taker: signedOrder.taker,
         tokenId: signedOrder.tokenId,
-        makerAmount: signedOrder.makerAmount,
-        takerAmount: signedOrder.takerAmount,
+        makerAmount: String(signedOrder.makerAmount),
+        takerAmount: String(signedOrder.takerAmount),
         side: sideStr,
-        expiration: signedOrder.expiration,
-        nonce: signedOrder.nonce,
-        feeRateBps: signedOrder.feeRateBps,
+        expiration: String(signedOrder.expiration),
+        nonce: String(signedOrder.nonce),
+        feeRateBps: String(signedOrder.feeRateBps),
         signatureType: signedOrder.signatureType,
         signature: signedOrder.signature,
       },
-      owner: storedCreds.apiKey,
+      owner: funderAddress,
       orderType: "FAK",
     };
+
+    console.log("Order payload owner:", orderPayload.owner, "maker:", orderPayload.order.maker, "signer:", orderPayload.order.signer);
 
     // Build L2 HMAC headers for submission
     const ts = Math.floor(Date.now() / 1000);
     const orderBody = JSON.stringify(orderPayload);
     const l2Sig = await buildPolyHmacSignature(storedCreds.secret, ts, "POST", "/order", orderBody);
     const polyHeaders: Record<string, string> = {
-      POLY_ADDRESS: wallet.address,
+      POLY_ADDRESS: funderAddress,
       POLY_SIGNATURE: l2Sig,
       POLY_TIMESTAMP: `${ts}`,
       POLY_API_KEY: storedCreds.apiKey,
