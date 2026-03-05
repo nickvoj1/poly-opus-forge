@@ -22,6 +22,14 @@ const MAX_ODDS_TO_TRADE = Number(Deno.env.get("MAX_ODDS_TO_TRADE") || 0.92);
 const MAX_MARKET_MINUTES = Number(Deno.env.get("MAX_MARKET_MINUTES") || 180);
 const PRICE_CROSS_AGGRESSION = Number(Deno.env.get("PRICE_CROSS_AGGRESSION") || 0.03);
 const MAX_PRICE_DRIFT = Number(Deno.env.get("MAX_PRICE_DRIFT") || 0.12);
+const MAX_PER_MARKET_LIVE_RISK_USD = Number(Deno.env.get("MAX_PER_MARKET_LIVE_RISK_USD") || 12);
+const MAX_PER_TOKEN_LIVE_RISK_USD = Number(Deno.env.get("MAX_PER_TOKEN_LIVE_RISK_USD") || 12);
+const MARKET_COOLDOWN_MINUTES = Number(Deno.env.get("MARKET_COOLDOWN_MINUTES") || 20);
+const MIN_EXPECTED_VALUE_USD = Number(Deno.env.get("MIN_EXPECTED_VALUE_USD") || 0.2);
+const KELLY_FRACTION = Number(Deno.env.get("KELLY_FRACTION") || 0.35);
+const MIN_KELLY_FRACTION_PER_TRADE = Number(Deno.env.get("MIN_KELLY_FRACTION_PER_TRADE") || 0.03);
+const MAX_KELLY_FRACTION_PER_TRADE = Number(Deno.env.get("MAX_KELLY_FRACTION_PER_TRADE") || 0.1);
+const URGENT_MARKET_SIZE_MULTIPLIER = Number(Deno.env.get("URGENT_MARKET_SIZE_MULTIPLIER") || 0.75);
 
 interface TradeExecResult {
   market: string;
@@ -33,6 +41,12 @@ interface TradeExecResult {
   error?: string;
   orderID?: string;
   relayStatus?: number;
+}
+
+interface ExposureContext {
+  marketRiskUsd: Record<string, number>;
+  tokenRiskUsd: Record<string, number>;
+  recentMarketTs: Record<string, number>;
 }
 
 async function fetchPolymarket(): Promise<{ text: string; marketsMap: Record<string, any> }> {
@@ -324,6 +338,32 @@ function toNumber(value: unknown, fallback = 0): number {
   return Number.isFinite(n) ? n : fallback;
 }
 
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
+function parseTokenIds(rawIds: unknown): string[] {
+  if (!rawIds) return [];
+  if (Array.isArray(rawIds)) return rawIds.map((x) => x?.toString()).filter(Boolean);
+  if (typeof rawIds === "string") {
+    try {
+      const parsed = JSON.parse(rawIds);
+      if (Array.isArray(parsed)) return parsed.map((x) => x?.toString()).filter(Boolean);
+    } catch {}
+  }
+  return [];
+}
+
+function computeKellyFraction(edge: number, entryPrice: number): number {
+  if (!Number.isFinite(edge) || !Number.isFinite(entryPrice) || entryPrice <= 0 || entryPrice >= 1) return 0;
+  const p = clamp(entryPrice + edge, 0.01, 0.99);
+  const q = 1 - p;
+  const b = (1 - entryPrice) / entryPrice;
+  if (b <= 0) return 0;
+  const k = (p * b - q) / b;
+  return Number.isFinite(k) && k > 0 ? k : 0;
+}
+
 function getMinutesToEnd(endDate?: string | null): number | null {
   if (!endDate) return null;
   const ms = new Date(endDate).getTime() - Date.now();
@@ -344,20 +384,70 @@ function getOutcomePriceForSide(meta: any, side: "BUY" | "SELL"): number | null 
   }
 }
 
-function normalizeAndRankHypos(hypos: any[], marketsMap: Record<string, any>, bankroll: number, liveTrading: boolean): any[] {
+async function loadExposureContext(sb: any): Promise<ExposureContext> {
+  const context: ExposureContext = { marketRiskUsd: {}, tokenRiskUsd: {}, recentMarketTs: {} };
+  const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+  const { data } = await sb
+    .from("bets")
+    .select("market,token_id,size,created_at,status,execution_status")
+    .eq("is_live", true)
+    .gte("created_at", since)
+    .in("execution_status", ["pending", "filled"])
+    .in("status", ["pending", "filled"])
+    .limit(800);
+
+  for (const row of data || []) {
+    const market = (row.market || "").toString();
+    const tokenId = (row.token_id || "").toString();
+    const size = Math.max(0, toNumber(row.size, 0));
+    const ts = new Date(row.created_at || 0).getTime();
+
+    if (market) {
+      context.marketRiskUsd[market] = (context.marketRiskUsd[market] || 0) + size;
+      if (!context.recentMarketTs[market] || ts > context.recentMarketTs[market]) {
+        context.recentMarketTs[market] = ts;
+      }
+    }
+    if (tokenId) {
+      context.tokenRiskUsd[tokenId] = (context.tokenRiskUsd[tokenId] || 0) + size;
+    }
+  }
+
+  return context;
+}
+
+function normalizeAndRankHypos(
+  hypos: any[],
+  marketsMap: Record<string, any>,
+  bankroll: number,
+  liveTrading: boolean,
+  exposure: ExposureContext,
+): any[] {
   const dedupe = new Set<string>();
   const normalized: any[] = [];
+  const now = Date.now();
 
   for (const raw of hypos || []) {
     const market = (raw?.market || "").toString().trim();
     if (!market) continue;
     const meta = marketsMap[market] || {};
-    if (!meta || !meta.clobTokenIds) continue;
+    const tokenIds = parseTokenIds(raw?.clobTokenIds || meta?.clobTokenIds);
+    if (!meta || tokenIds.length === 0) continue;
 
     const actionRaw = (raw?.action || raw?.side || "BUY").toString().toUpperCase();
     const action = actionRaw === "SELL" || actionRaw === "BUY_NO" ? "SELL" : "BUY";
-    const key = `${market}::${action}`;
+    const tokenId = action === "BUY" ? tokenIds[0] : tokenIds[1] || tokenIds[0];
+    const key = `${market}::${action}::${tokenId}`;
     if (dedupe.has(key)) continue;
+
+    const marketRisk = toNumber(exposure.marketRiskUsd[market], 0);
+    const tokenRisk = toNumber(exposure.tokenRiskUsd[tokenId], 0);
+    const recentTs = toNumber(exposure.recentMarketTs[market], 0);
+    if (liveTrading) {
+      if (marketRisk >= MAX_PER_MARKET_LIVE_RISK_USD) continue;
+      if (tokenRisk >= MAX_PER_TOKEN_LIVE_RISK_USD) continue;
+      if (recentTs > 0 && now - recentTs < MARKET_COOLDOWN_MINUTES * 60 * 1000) continue;
+    }
 
     const volume = toNumber(meta.volumeNum);
     const liquidity = toNumber(meta.liquidityNum);
@@ -375,28 +465,53 @@ function normalizeAndRankHypos(hypos: any[], marketsMap: Record<string, any>, ba
     if (!Number.isFinite(referencePrice)) continue;
     if (referencePrice < MIN_ODDS_TO_TRADE || referencePrice > MAX_ODDS_TO_TRADE) continue;
 
-    const rawSize = toNumber(raw?.size, bankroll * 0.06);
+    const computedKelly = computeKellyFraction(edge, referencePrice);
+    const modelKelly = toNumber(raw?.kelly_f, NaN);
+    const baseKelly = Number.isFinite(modelKelly) && modelKelly > 0 ? Math.min(modelKelly, computedKelly || modelKelly) : computedKelly;
+    const fractionalKelly = clamp(baseKelly * KELLY_FRACTION, 0, MAX_KELLY_FRACTION_PER_TRADE);
+    if (liveTrading && fractionalKelly <= 0) continue;
+
+    let sizeByKelly = bankroll * Math.max(MIN_KELLY_FRACTION_PER_TRADE, fractionalKelly);
+    if (minsToEnd !== null && minsToEnd <= 15) {
+      sizeByKelly *= URGENT_MARKET_SIZE_MULTIPLIER;
+    }
+
+    const rawSize = toNumber(raw?.size, sizeByKelly);
+    const proposedSize = liveTrading ? Math.min(rawSize, sizeByKelly * 1.25) : rawSize;
     const minSize = liveTrading ? 5 : 1;
     const maxSize = liveTrading ? Math.max(5, bankroll * 0.2) : Math.max(1, bankroll * 0.15);
-    const size = Math.max(minSize, Math.min(maxSize, rawSize));
+    const marketCapRemaining = liveTrading ? Math.max(0, MAX_PER_MARKET_LIVE_RISK_USD - marketRisk) : maxSize;
+    const tokenCapRemaining = liveTrading ? Math.max(0, MAX_PER_TOKEN_LIVE_RISK_USD - tokenRisk) : maxSize;
+    const riskCap = liveTrading ? Math.min(maxSize, marketCapRemaining, tokenCapRemaining) : maxSize;
+    if (liveTrading && riskCap < minSize) continue;
+    const size = clamp(proposedSize, minSize, riskCap);
+
+    const expectedValueUsd = size * edge;
+    if (liveTrading && expectedValueUsd < MIN_EXPECTED_VALUE_USD) continue;
 
     const urgencyScore = minsToEnd === null ? 0 : minsToEnd <= 15 ? 4 : minsToEnd <= 60 ? 2 : 1;
     const liquidityScore = Math.min(4, Math.log10(Math.max(10, liquidity)) - 3);
     const volumeScore = Math.min(4, Math.log10(Math.max(10, volume)) - 3);
-    const score = edge * 100 + urgencyScore + liquidityScore + volumeScore;
+    const concentrationPenalty = liveTrading ? Math.min(8, (marketRisk + tokenRisk) * 0.1) : 0;
+    const score =
+      edge * 100 + urgencyScore + liquidityScore + volumeScore + Math.min(10, expectedValueUsd) + fractionalKelly * 30 - concentrationPenalty;
 
     dedupe.add(key);
     normalized.push({
       ...raw,
       market,
       action,
+      clobTokenIds: tokenIds,
+      tokenId,
       edge,
       price: Number(referencePrice.toFixed(3)),
       size: Number(size.toFixed(2)),
+      kelly_f: Number(fractionalKelly.toFixed(4)),
       _score: score,
       _minsToEnd: minsToEnd,
       _volume: volume,
       _liquidity: liquidity,
+      _expectedValue: expectedValueUsd,
     });
   }
 
@@ -412,15 +527,7 @@ async function executeTrade(
   marketsMap: Record<string, any>,
 ): Promise<TradeExecResult> {
   const meta = marketsMap[hypo.market] || {};
-  let tokenIds: string[] = [];
-
-  // Get token IDs from market data
-  const rawIds = hypo.clobTokenIds || meta.clobTokenIds;
-  if (rawIds) {
-    try {
-      tokenIds = typeof rawIds === "string" ? JSON.parse(rawIds) : rawIds;
-    } catch {}
-  }
+  let tokenIds: string[] = parseTokenIds(hypo.clobTokenIds || meta.clobTokenIds);
 
   // If no token IDs from market data, try fetching from Gamma API
   if (tokenIds.length === 0) {
@@ -431,10 +538,7 @@ async function executeTrade(
         if (res.ok) {
           const markets = await res.json();
           if (markets[0]?.clobTokenIds) {
-            const ids =
-              typeof markets[0].clobTokenIds === "string"
-                ? JSON.parse(markets[0].clobTokenIds)
-                : markets[0].clobTokenIds;
+            const ids = parseTokenIds(markets[0].clobTokenIds);
             tokenIds = ids;
           }
         }
@@ -472,7 +576,13 @@ async function executeTrade(
     return { market: hypo.market, tokenId, side: tradeSide, status: "skipped", price: 0.5, error: "invalid_reference_price" };
   }
 
-  let crossedPrice = tradeSide === "BUY" ? referencePrice + PRICE_CROSS_AGGRESSION : referencePrice - PRICE_CROSS_AGGRESSION;
+  const edge = toNumber(hypo.edge, MIN_EDGE_TO_TRADE);
+  const minsToEnd = getMinutesToEnd(meta.endDate);
+  const urgencyBoost = minsToEnd !== null && minsToEnd <= 15 ? 1.2 : minsToEnd !== null && minsToEnd > 90 ? 0.8 : 1;
+  const edgeBoost = edge >= 0.12 ? 1.15 : edge >= 0.08 ? 1.0 : 0.85;
+  const aggression = clamp(PRICE_CROSS_AGGRESSION * urgencyBoost * edgeBoost, 0.01, MAX_PRICE_DRIFT);
+
+  let crossedPrice = tradeSide === "BUY" ? referencePrice + aggression : referencePrice - aggression;
   if (Math.abs(crossedPrice - referencePrice) > MAX_PRICE_DRIFT) {
     crossedPrice = referencePrice + Math.sign(crossedPrice - referencePrice) * MAX_PRICE_DRIFT;
   }
@@ -628,7 +738,7 @@ serve(async (req) => {
     const body = await req.json();
     const cycle = body.cycle || 1;
     const bankroll = body.bankroll || 18;
-    const systemPrompt = body.systemPrompt || "Find high-edge trades ending soon. Be aggressive.";
+    const systemPrompt = body.systemPrompt || "Find high-quality positive-EV trades ending soon while controlling downside risk.";
     const liveTrading = body.liveTrading ?? true;
     const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
 
@@ -667,7 +777,8 @@ serve(async (req) => {
     const marketsMap = polyResult.marketsMap;
 
     const userMessage = `Cycle ${cycle}. Bankroll: $${bankroll}.
-⚡ LIVE TRADING MODE: Aggressive Kelly sizing. Max $2.70 per trade (15% bankroll).
+⚡ LIVE TRADING MODE: Fractional Kelly sizing with risk caps.
+Per-trade cap: $${Math.max(5, bankroll * 0.2).toFixed(2)}. Min edge: ${(MIN_EDGE_TO_TRADE * 100).toFixed(1)}%.
 
 LIVE DATA:
 ${polyData}
@@ -690,7 +801,7 @@ ${systemPrompt}`;
           messages: [
             {
               role: "system",
-              content: `You are an aggressive quantitative trading engine for Polymarket. You MUST respond with valid JSON only. No markdown, no code blocks.
+              content: `You are a quantitative trading engine for Polymarket focused on positive expectancy and strict risk control. You MUST respond with valid JSON only. No markdown, no code blocks.
 
 KELLY CRITERION STRATEGY (Target: positive expectancy with capital preservation):
 1. EDGE DETECTION: Calculate TRUE probability using BTC momentum, news sentiment, whale flows, volume patterns.
@@ -775,15 +886,14 @@ CRITICAL: ONLY trade CRYPTO markets ending SOON (<60 min). Use EXACT market ques
     for (const h of parsed.hypos) {
       const meta = marketsMap[h.market];
       if (meta?.clobTokenIds) {
-        try {
-          h.clobTokenIds = typeof meta.clobTokenIds === "string" ? JSON.parse(meta.clobTokenIds) : meta.clobTokenIds;
-        } catch {}
+        h.clobTokenIds = parseTokenIds(meta.clobTokenIds);
       }
       if (meta?.conditionId) h.condition_id = meta.conditionId;
       if (meta?.slug) h.market_slug = meta.slug;
     }
 
-    const rankedHypos = normalizeAndRankHypos(parsed.hypos, marketsMap, bankroll, liveTrading);
+    const exposure = liveTrading ? await loadExposureContext(sb) : { marketRiskUsd: {}, tokenRiskUsd: {}, recentMarketTs: {} };
+    const rankedHypos = normalizeAndRankHypos(parsed.hypos, marketsMap, bankroll, liveTrading, exposure);
     const filteredCount = aiCount - rankedHypos.length;
     parsed.hypos = rankedHypos.map(({ _score, _minsToEnd, _volume, _liquidity, ...rest }: any) => rest);
     if (filteredCount > 0) {
