@@ -510,9 +510,9 @@ function normalizeAndRankHypos(
     const modelPrice = toNumber(raw?.price, NaN);
     const referencePrice = Number.isFinite(modelPrice) ? modelPrice : metaPrice;
     if (!Number.isFinite(referencePrice)) continue;
-    if (referencePrice < MIN_ODDS_TO_TRADE || referencePrice > MAX_ODDS_TO_TRADE) continue;
+    if (referencePrice! < MIN_ODDS_TO_TRADE || referencePrice! > MAX_ODDS_TO_TRADE) continue;
 
-    const computedKelly = computeKellyFraction(edge, referencePrice);
+    const computedKelly = computeKellyFraction(edge, referencePrice!);
     const modelKelly = toNumber(raw?.kelly_f, NaN);
     const baseKelly = Number.isFinite(modelKelly) && modelKelly > 0 ? Math.min(modelKelly, computedKelly || modelKelly) : computedKelly;
     const fractionalKelly = clamp(baseKelly * KELLY_FRACTION, 0, MAX_KELLY_FRACTION_PER_TRADE);
@@ -553,7 +553,7 @@ function normalizeAndRankHypos(
       clobTokenIds: tokenIds,
       tokenId,
       edge,
-      price: Number(referencePrice.toFixed(3)),
+      price: Number(referencePrice!.toFixed(3)),
       size: Number(size.toFixed(2)),
       kelly_f: Number(fractionalKelly.toFixed(4)),
       _score: score,
