@@ -1,4 +1,4 @@
-import { create } from 'zustand';
+import { create } from "zustand";
 
 export interface Hypo {
   market: string;
@@ -26,7 +26,7 @@ export interface TradeExecution {
   side: string;
   size: number;
   price: number;
-  status: 'pending' | 'filled' | 'failed';
+  status: "pending" | "filled" | "failed";
   error?: string;
   timestamp: number;
 }
@@ -47,7 +47,7 @@ interface BetRecord {
   side: string;
   recommended_price: number;
   size: number;
-  status: 'pending' | 'won' | 'lost' | 'void' | 'expired';
+  status: "pending" | "won" | "lost" | "void" | "expired";
   resolution: string | null;
   pnl: number | null;
   is_live: boolean;
@@ -84,21 +84,25 @@ interface BotState {
   reset: () => void;
 }
 
-const DEFAULT_PROMPT = `JSON output ONLY. Aggressive Kelly Criterion — MAXIMIZE PROFITS.
+const DEFAULT_PROMPT = `JSON output ONLY. Trade only when the supplied market data shows clear positive expectancy.
 
-EDGE DETECTION: TRUE_prob - market_price > 15% required.
-- BTC 24h change: NEGATIVE → SELL/NO, POSITIVE → BUY/YES.
-- Volume spikes + liquidity shifts = secondary signals.
-- High-volume markets ONLY (>$10k volume or >$5k liquidity).
-- MULTI-TIMEFRAME CONFIRMATION: 5m + 15m alignment = high conviction.
+EDGE DETECTION:
+- Use ONLY the provided market data. Do not invent external news or hidden information.
+- Require positive net edge after spread and fees.
+- Prefer tight spreads, real liquidity, and near-term resolution.
 
-KELLY SIZING: f* = (p*b-q)/b → Aggressive 18% bankroll on best trades.
-- Live: max $5.00/trade. Sim: 18% bankroll on 25%+ edge.
-- Target 3-5 HIGH-CONVICTION trades per cycle, compound winners.
-- Prioritize FEWER BIGGER trades over many small ones.
-- Max drawdown: 30%.
+SIZING:
+- Use fractional Kelly and respect backend risk caps.
+- Prefer 0-2 trades per cycle.
+- It is acceptable to return zero trades.
 
-JSON: {"cycle":N,"bankroll":X,"sharpe":Y,"mdd":Z,"hypos":[{"market":"exact name","action":"BUY/SELL","size":N,"pnl":0,"price":0.5,"edge":0.25,"kelly_f":0.18}],"rules":[".."],"log":".."}`;
+MARKET SELECTION:
+- Consider any market supplied by the backend.
+- Prefer markets resolving within 60 minutes.
+- Skip markets where the data does not justify a trade.
+
+JSON: {"cycle":N,"bankroll":X,"sharpe":Y,"mdd":Z,"hypos":[{"market":"exact name","action":"BUY/SELL","size":N,"pnl":0,"price":0.5,"edge":0.05,"kelly_f":0.03}],"rules":[".."],"log":".."}`;
+
 export const useBotStore = create<BotState>((set) => ({
   running: false,
   cycle: 0,
