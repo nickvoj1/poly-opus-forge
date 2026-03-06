@@ -7,29 +7,38 @@ const corsHeaders = {
     "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
 };
 
-const MAX_TRADES_PER_CYCLE = Number(Deno.env.get("MAX_TRADES_PER_CYCLE") || 10);
-const MAX_CONCURRENT_TRADES = Number(Deno.env.get("MAX_CONCURRENT_TRADES") || 5);
+const MAX_TRADES_PER_CYCLE = Number(Deno.env.get("MAX_TRADES_PER_CYCLE") || 2);
+const MAX_CONCURRENT_TRADES = Number(Deno.env.get("MAX_CONCURRENT_TRADES") || 2);
 const MAX_DAILY_LIVE_RISK_USD = Number(Deno.env.get("MAX_DAILY_LIVE_RISK_USD") || 60);
 const MAX_OPEN_LIVE_BETS = Number(Deno.env.get("MAX_OPEN_LIVE_BETS") || 30);
 const MAX_DAILY_LOSS_USD = Number(Deno.env.get("MAX_DAILY_LOSS_USD") || -30);
-const FAILURE_CIRCUIT_BREAKER_RATIO = Number(Deno.env.get("FAILURE_CIRCUIT_BREAKER_RATIO") || 0.6);
+const FAILURE_CIRCUIT_BREAKER_RATIO = Number(Deno.env.get("FAILURE_CIRCUIT_BREAKER_RATIO") || 0.45);
 const TRADE_TIMEOUT_MS = Number(Deno.env.get("TRADE_TIMEOUT_MS") || 12000);
-const MIN_EDGE_TO_TRADE = Number(Deno.env.get("MIN_EDGE_TO_TRADE") || 0.06);
+const MIN_EDGE_TO_TRADE = Number(Deno.env.get("MIN_EDGE_TO_TRADE") || 0.08);
 const MIN_LIQUIDITY_TO_TRADE = Number(Deno.env.get("MIN_LIQUIDITY_TO_TRADE") || 5000);
 const MIN_VOLUME_TO_TRADE = Number(Deno.env.get("MIN_VOLUME_TO_TRADE") || 10000);
 const MIN_ODDS_TO_TRADE = Number(Deno.env.get("MIN_ODDS_TO_TRADE") || 0.08);
 const MAX_ODDS_TO_TRADE = Number(Deno.env.get("MAX_ODDS_TO_TRADE") || 0.92);
-const MAX_MARKET_MINUTES = Number(Deno.env.get("MAX_MARKET_MINUTES") || 180);
+const MAX_MARKET_MINUTES = Number(Deno.env.get("MAX_MARKET_MINUTES") || 90);
 const PRICE_CROSS_AGGRESSION = Number(Deno.env.get("PRICE_CROSS_AGGRESSION") || 0.03);
 const MAX_PRICE_DRIFT = Number(Deno.env.get("MAX_PRICE_DRIFT") || 0.12);
 const MAX_PER_MARKET_LIVE_RISK_USD = Number(Deno.env.get("MAX_PER_MARKET_LIVE_RISK_USD") || 12);
 const MAX_PER_TOKEN_LIVE_RISK_USD = Number(Deno.env.get("MAX_PER_TOKEN_LIVE_RISK_USD") || 12);
 const MARKET_COOLDOWN_MINUTES = Number(Deno.env.get("MARKET_COOLDOWN_MINUTES") || 20);
-const MIN_EXPECTED_VALUE_USD = Number(Deno.env.get("MIN_EXPECTED_VALUE_USD") || 0.2);
-const KELLY_FRACTION = Number(Deno.env.get("KELLY_FRACTION") || 0.35);
-const MIN_KELLY_FRACTION_PER_TRADE = Number(Deno.env.get("MIN_KELLY_FRACTION_PER_TRADE") || 0.03);
-const MAX_KELLY_FRACTION_PER_TRADE = Number(Deno.env.get("MAX_KELLY_FRACTION_PER_TRADE") || 0.1);
+const MIN_EXPECTED_VALUE_USD = Number(Deno.env.get("MIN_EXPECTED_VALUE_USD") || 0.05);
+const KELLY_FRACTION = Number(Deno.env.get("KELLY_FRACTION") || 0.2);
+const MIN_KELLY_FRACTION_PER_TRADE = Number(Deno.env.get("MIN_KELLY_FRACTION_PER_TRADE") || 0.01);
+const MAX_KELLY_FRACTION_PER_TRADE = Number(Deno.env.get("MAX_KELLY_FRACTION_PER_TRADE") || 0.06);
 const URGENT_MARKET_SIZE_MULTIPLIER = Number(Deno.env.get("URGENT_MARKET_SIZE_MULTIPLIER") || 0.75);
+const MIN_LIVE_TRADE_SIZE_USD = Number(Deno.env.get("MIN_LIVE_TRADE_SIZE_USD") || 1);
+const MAX_TRADE_SIZE_PCT = Number(Deno.env.get("MAX_TRADE_SIZE_PCT") || 0.08);
+const MAX_DAILY_RISK_PCT = Number(Deno.env.get("MAX_DAILY_RISK_PCT") || 0.35);
+const MAX_DAILY_LOSS_PCT = Number(Deno.env.get("MAX_DAILY_LOSS_PCT") || 0.2);
+const MAX_OPEN_PENDING_RISK_PCT = Number(Deno.env.get("MAX_OPEN_PENDING_RISK_PCT") || 0.25);
+const MAX_MARKET_EXPOSURE_PCT = Number(Deno.env.get("MAX_MARKET_EXPOSURE_PCT") || 0.12);
+const MAX_TOKEN_EXPOSURE_PCT = Number(Deno.env.get("MAX_TOKEN_EXPOSURE_PCT") || 0.12);
+const MAX_CONSECUTIVE_LOSSES = Number(Deno.env.get("MAX_CONSECUTIVE_LOSSES") || 3);
+const LOSS_STREAK_COOLDOWN_MINUTES = Number(Deno.env.get("LOSS_STREAK_COOLDOWN_MINUTES") || 45);
 
 interface TradeExecResult {
   market: string;
@@ -195,7 +204,7 @@ function buildFallbackHypos(marketsMap: Record<string, any>, bankroll: number, l
     .slice(0, 5);
 
   const hypos: any[] = [];
-  const baseSize = liveTrading ? Math.max(5, bankroll * 0.08) : Math.max(1, bankroll * 0.05);
+  const baseSize = liveTrading ? Math.max(MIN_LIVE_TRADE_SIZE_USD, bankroll * 0.04) : Math.max(1, bankroll * 0.05);
 
   for (const m of entries.slice(0, 3)) {
     let prices: number[] = [];
@@ -222,11 +231,16 @@ function buildFallbackHypos(marketsMap: Record<string, any>, bankroll: number, l
   return hypos;
 }
 
-async function guardRiskLimits(sb: any) {
+async function guardRiskLimits(sb: any, bankroll: number) {
   const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
 
-  const [{ data: openBets }, { data: dailyBets }, { data: resolvedBets }] = await Promise.all([
-    sb.from("bets").select("id", { count: "exact" }).eq("is_live", true).eq("status", "pending").eq("execution_status", "pending"),
+  const [{ data: openBets }, { data: dailyBets }, { data: resolvedBets }, { data: recentResolved }] = await Promise.all([
+    sb
+      .from("bets")
+      .select("id,size", { count: "exact" })
+      .eq("is_live", true)
+      .eq("status", "pending")
+      .eq("execution_status", "pending"),
     sb
       .from("bets")
       .select("size")
@@ -234,23 +248,56 @@ async function guardRiskLimits(sb: any) {
       .gte("created_at", since)
       .in("execution_status", ["pending", "filled"]),
     sb.from("bets").select("pnl").eq("is_live", true).gte("resolved_at", since).not("pnl", "is", null),
+    sb
+      .from("bets")
+      .select("pnl,resolved_at")
+      .eq("is_live", true)
+      .not("pnl", "is", null)
+      .order("resolved_at", { ascending: false })
+      .limit(8),
   ]);
 
   const openCount = Number(openBets?.length || 0);
+  const openPendingRisk = (openBets || []).reduce((s: number, b: any) => s + Number(b.size || 0), 0);
   const dailyRisk = (dailyBets || []).reduce((s: number, b: any) => s + Number(b.size || 0), 0);
   const dailyLoss = (resolvedBets || []).reduce((s: number, b: any) => s + Number(b.pnl || 0), 0);
+  const dynamicDailyRiskCap = Math.max(MIN_LIVE_TRADE_SIZE_USD, bankroll * MAX_DAILY_RISK_PCT);
+  const effectiveDailyRiskCap = Math.min(MAX_DAILY_LIVE_RISK_USD, dynamicDailyRiskCap);
+  const dynamicDailyLossLimit = -Math.max(MIN_LIVE_TRADE_SIZE_USD, bankroll * MAX_DAILY_LOSS_PCT);
+  const effectiveDailyLossLimit = Math.max(MAX_DAILY_LOSS_USD, dynamicDailyLossLimit);
+  const openPendingRiskCap = Math.max(MIN_LIVE_TRADE_SIZE_USD, bankroll * MAX_OPEN_PENDING_RISK_PCT);
+
+  let lossStreak = 0;
+  for (const row of recentResolved || []) {
+    if (Number(row.pnl || 0) < 0) lossStreak += 1;
+    else break;
+  }
+  const latestResolvedAt = recentResolved?.[0]?.resolved_at ? new Date(recentResolved[0].resolved_at).getTime() : 0;
+  const minsSinceLatestResolution = latestResolvedAt ? Math.round((Date.now() - latestResolvedAt) / 60000) : Infinity;
 
   if (openCount >= MAX_OPEN_LIVE_BETS) {
     return { blocked: true, reason: `Open bet cap reached (${openCount}/${MAX_OPEN_LIVE_BETS})` };
   }
-  if (dailyRisk >= MAX_DAILY_LIVE_RISK_USD) {
-    return { blocked: true, reason: `Daily risk cap reached ($${dailyRisk.toFixed(2)}/$${MAX_DAILY_LIVE_RISK_USD})` };
+  if (openPendingRisk >= openPendingRiskCap) {
+    return {
+      blocked: true,
+      reason: `Open pending risk cap reached ($${openPendingRisk.toFixed(2)}/$${openPendingRiskCap.toFixed(2)})`,
+    };
   }
-  if (dailyLoss <= MAX_DAILY_LOSS_USD) {
+  if (dailyRisk >= effectiveDailyRiskCap) {
+    return { blocked: true, reason: `Daily risk cap reached ($${dailyRisk.toFixed(2)}/$${effectiveDailyRiskCap.toFixed(2)})` };
+  }
+  if (dailyLoss <= effectiveDailyLossLimit) {
     return { blocked: true, reason: `Daily loss limit hit ($${dailyLoss.toFixed(2)})` };
   }
+  if (lossStreak >= MAX_CONSECUTIVE_LOSSES && minsSinceLatestResolution < LOSS_STREAK_COOLDOWN_MINUTES) {
+    return {
+      blocked: true,
+      reason: `Loss streak cooldown (${lossStreak} losses, ${LOSS_STREAK_COOLDOWN_MINUTES - minsSinceLatestResolution}m remaining)`,
+    };
+  }
 
-  return { blocked: false, openCount, dailyRisk, dailyLoss };
+  return { blocked: false, openCount, openPendingRisk, dailyRisk, dailyLoss, lossStreak };
 }
 
 async function reconcilePendingBets(sb: any, supabaseUrl: string, supabaseKey: string) {
@@ -478,10 +525,12 @@ function normalizeAndRankHypos(
 
     const rawSize = toNumber(raw?.size, sizeByKelly);
     const proposedSize = liveTrading ? Math.min(rawSize, sizeByKelly * 1.25) : rawSize;
-    const minSize = liveTrading ? 5 : 1;
-    const maxSize = liveTrading ? Math.max(5, bankroll * 0.2) : Math.max(1, bankroll * 0.15);
-    const marketCapRemaining = liveTrading ? Math.max(0, MAX_PER_MARKET_LIVE_RISK_USD - marketRisk) : maxSize;
-    const tokenCapRemaining = liveTrading ? Math.max(0, MAX_PER_TOKEN_LIVE_RISK_USD - tokenRisk) : maxSize;
+    const minSize = liveTrading ? MIN_LIVE_TRADE_SIZE_USD : 1;
+    const maxSize = liveTrading ? Math.max(minSize, bankroll * MAX_TRADE_SIZE_PCT) : Math.max(1, bankroll * 0.15);
+    const marketCapUsd = liveTrading ? Math.min(MAX_PER_MARKET_LIVE_RISK_USD, bankroll * MAX_MARKET_EXPOSURE_PCT) : maxSize;
+    const tokenCapUsd = liveTrading ? Math.min(MAX_PER_TOKEN_LIVE_RISK_USD, bankroll * MAX_TOKEN_EXPOSURE_PCT) : maxSize;
+    const marketCapRemaining = liveTrading ? Math.max(0, marketCapUsd - marketRisk) : maxSize;
+    const tokenCapRemaining = liveTrading ? Math.max(0, tokenCapUsd - tokenRisk) : maxSize;
     const riskCap = liveTrading ? Math.min(maxSize, marketCapRemaining, tokenCapRemaining) : maxSize;
     if (liveTrading && riskCap < minSize) continue;
     const size = clamp(proposedSize, minSize, riskCap);
@@ -589,7 +638,7 @@ async function executeTrade(
   const price = Math.max(0.01, Math.min(0.99, Number(crossedPrice.toFixed(3))));
 
   const requestedSize = Number(hypo.size || 0);
-  const finalSize = Math.max(5, Number.isFinite(requestedSize) ? requestedSize : 5);
+  const finalSize = Math.max(MIN_LIVE_TRADE_SIZE_USD, Number.isFinite(requestedSize) ? requestedSize : MIN_LIVE_TRADE_SIZE_USD);
   console.log(
     `🔄 Executing: ${tradeSide} ${finalSize} of ${hypo.market} @ $${price.toFixed(3)} (ref $${referencePrice.toFixed(3)})`,
   );
@@ -737,7 +786,7 @@ serve(async (req) => {
   try {
     const body = await req.json();
     const cycle = body.cycle || 1;
-    const bankroll = body.bankroll || 18;
+    const bankroll = toNumber(body.bankroll, 18);
     const systemPrompt = body.systemPrompt || "Find high-quality positive-EV trades ending soon while controlling downside risk.";
     const liveTrading = body.liveTrading ?? true;
     const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
@@ -755,7 +804,7 @@ serve(async (req) => {
     }
 
     if (liveTrading) {
-      const guard = await guardRiskLimits(sb);
+      const guard = await guardRiskLimits(sb, bankroll);
       if (guard.blocked) {
         return new Response(
           JSON.stringify({
@@ -778,7 +827,7 @@ serve(async (req) => {
 
     const userMessage = `Cycle ${cycle}. Bankroll: $${bankroll}.
 ⚡ LIVE TRADING MODE: Fractional Kelly sizing with risk caps.
-Per-trade cap: $${Math.max(5, bankroll * 0.2).toFixed(2)}. Min edge: ${(MIN_EDGE_TO_TRADE * 100).toFixed(1)}%.
+Per-trade cap: $${Math.max(MIN_LIVE_TRADE_SIZE_USD, bankroll * MAX_TRADE_SIZE_PCT).toFixed(2)}. Min edge: ${(MIN_EDGE_TO_TRADE * 100).toFixed(1)}%.
 
 LIVE DATA:
 ${polyData}
@@ -805,12 +854,12 @@ ${systemPrompt}`;
 
 KELLY CRITERION STRATEGY (Target: positive expectancy with capital preservation):
 1. EDGE DETECTION: Calculate TRUE probability using BTC momentum, news sentiment, whale flows, volume patterns.
-   - Edge = TRUE_prob - market_price. Trade when edge > 6% (0.06). Skip weak edges.
+   - Edge = TRUE_prob - market_price. Trade when edge > 8% (0.08). Skip weak edges.
    - BTC 24h change is primary signal. Negative → SELL/NO, Positive → BUY/YES.
    - Use time decay: markets ending in <10 min with mispriced odds have HUGE edge.
 
 2. KELLY SIZING: f* = (p*b - q) / b where p=win_prob, q=1-p, b=odds.
-   - Use FRACTIONAL Kelly: bet 3-10% of bankroll per trade.
+   - Use FRACTIONAL Kelly: bet 1-6% of bankroll per trade.
    - Live mode: respect provided size caps and never force oversized bets.
 
 3. MARKET SELECTION:
@@ -818,9 +867,9 @@ KELLY CRITERION STRATEGY (Target: positive expectancy with capital preservation)
    - ONLY markets ending SOON: <10 min is ideal, <60 min is acceptable. Do NOT trade markets ending in hours.
    - ONLY high-volume markets (volume > $10,000 or liquidity > $5,000).
    - Parse "outcomePrices" as "[YesPrice, NoPrice]". Trade the side priced 0.15-0.75.
-   - Output 0-3 hypos. It is acceptable to return 0 when no clear edge exists.
+   - Output 0-2 hypos. It is acceptable to return 0 when no clear edge exists.
 
-4. COMPOUNDING: Target 5+ trades per cycle. Roll winners into next cycle bankroll.
+4. RISK FIRST: Prefer fewer, high-conviction setups. Avoid overtrading.
 
 5. OUTPUT each hypo with: "market" (exact question), "action" (BUY/SELL), "size" (dollar amount), "pnl" (0), "price" (entry price), "edge" (estimated edge), "kelly_f" (kelly fraction used).
 
