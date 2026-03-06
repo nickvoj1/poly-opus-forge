@@ -244,7 +244,8 @@ function buildFallbackHypos(marketsMap: Record<string, any>, bankroll: number, l
 }
 
 async function guardRiskLimits(sb: any, bankroll: number) {
-  const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+  const since = getRiskWindowStartIso();
+  console.log(`📊 Risk window start: ${since} (RISK_RESET_AT=${Deno.env.get("RISK_RESET_AT") || "not set, using DEFAULT_RISK_RESET_AT"})`);
 
   const [{ data: openBets }, { data: dailyBets }, { data: resolvedBets }, { data: recentResolved }] = await Promise.all([
     sb
@@ -265,6 +266,7 @@ async function guardRiskLimits(sb: any, bankroll: number) {
       .select("pnl,resolved_at")
       .eq("is_live", true)
       .not("pnl", "is", null)
+      .gte("resolved_at", since)
       .order("resolved_at", { ascending: false })
       .limit(8),
   ]);
