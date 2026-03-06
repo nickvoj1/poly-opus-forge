@@ -40,6 +40,18 @@ const MAX_TOKEN_EXPOSURE_PCT = Number(Deno.env.get("MAX_TOKEN_EXPOSURE_PCT") || 
 const MAX_CONSECUTIVE_LOSSES = Number(Deno.env.get("MAX_CONSECUTIVE_LOSSES") || 3);
 const LOSS_STREAK_COOLDOWN_MINUTES = Number(Deno.env.get("LOSS_STREAK_COOLDOWN_MINUTES") || 45);
 
+const DEFAULT_RISK_RESET_AT = "2026-03-06T11:00:00Z";
+
+function getRiskWindowStartIso(): string {
+  const resetAt = Deno.env.get("RISK_RESET_AT") || DEFAULT_RISK_RESET_AT;
+  const resetTime = new Date(resetAt).getTime();
+  if (!Number.isFinite(resetTime) || resetTime > Date.now()) {
+    // Fallback to 24h rolling window if reset time is in the future or invalid
+    return new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+  }
+  return new Date(resetTime).toISOString();
+}
+
 interface TradeExecResult {
   market: string;
   tokenId?: string;
