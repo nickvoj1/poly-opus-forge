@@ -338,7 +338,7 @@ async function signAndSubmitOrder(
       console.log("Attempting SDK createAndPostOrder (direct) with GTC...");
       const sdkResult = await client.createAndPostOrder(
         { tokenID: tokenId, price: finalPrice, size: roundedSize, side: tradeSide, feeRateBps },
-        { tickSize: `${tickSize}`, negRisk },
+        { tickSize: `${tickSize}` as any, negRisk },
         OrderType.GTC,
       );
       console.log("SDK postOrder result:", JSON.stringify(sdkResult).substring(0, 300));
@@ -353,8 +353,8 @@ async function signAndSubmitOrder(
 
     // Strategy B: Sign with SDK, submit manually via proxy
     const signedOrder = await client.createOrder(
-      { tokenID: tokenId, price: finalPrice, size: roundedSize, side: tradeSide, orderType: OrderType.GTC, feeRateBps },
-      { tickSize: `${tickSize}`, negRisk },
+      { tokenID: tokenId, price: finalPrice, size: roundedSize, side: tradeSide, feeRateBps } as any,
+      { tickSize: `${tickSize}` as any, negRisk },
     );
 
     console.log("Signed order fields:", JSON.stringify({
@@ -381,7 +381,7 @@ async function signAndSubmitOrder(
     }
 
     // Strategy C: Manual proxy submission as last resort
-    const sideStr = signedOrder.side === 0 || signedOrder.side === "BUY" ? "BUY" : "SELL";
+    const sideStr = (signedOrder.side as any) === 0 || (signedOrder.side as any) === "BUY" ? "BUY" : "SELL";
     const orderPayload = {
       deferExec: false,
       order: {
